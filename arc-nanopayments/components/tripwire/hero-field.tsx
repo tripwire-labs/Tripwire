@@ -24,7 +24,7 @@ type Job = { id: string; status: number; sellerAtFault?: boolean; amount?: strin
 type JobsResponse = { jobs: Job[] };
 
 /** Radar sweep period. Every blip's ping is phase-locked to this so pings track the sweep. */
-const SWEEP_SECONDS = 12;
+const SWEEP_SECONDS = 42;
 
 function toneFor(job: Job) {
   if (job.status === 1) return "pending";
