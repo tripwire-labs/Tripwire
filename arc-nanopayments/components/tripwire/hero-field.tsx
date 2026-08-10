@@ -48,7 +48,7 @@ export function SiteField() {
   // Plot each job at a deterministic angle and radius derived from its id, so a job always
   // sits in the same place across reloads rather than jumping around on every poll.
   const blips = useMemo(() => {
-    const jobs = (data?.jobs ?? []).slice(-14);
+    const jobs = (data?.jobs ?? []).slice(-9);
     return jobs.map((job) => {
       const n = Number(job.id) || 0;
       const angle = (n * 137.5) % 360;            // golden-angle spread, avoids clustering
@@ -58,12 +58,15 @@ export function SiteField() {
         job,
         tone: toneFor(job),
         label: labelFor(job),
+        // Only the newest few are annotated; the rest stay as quiet blips so the field does
+        // not turn into a wall of text behind the copy.
+        annotated: false,
         left: 50 + Math.cos(radians) * radius,
         top: 50 + Math.sin(radians) * radius * 0.82, // slight squash: reads as perspective
         // Phase-lock the ping to the moment the sweep passes this angle.
         delay: -(SWEEP_SECONDS * (1 - angle / 360)),
       };
-    });
+    }).map((blip, index, all) => ({ ...blip, annotated: index >= all.length - 4 }));
   }, [data?.jobs]);
 
   return (
@@ -77,14 +80,14 @@ export function SiteField() {
         {/* The sweep: one rotating conic wedge with a trailing fade. */}
         <i className="radar-sweep" style={{ animationDuration: `${SWEEP_SECONDS}s` }} />
 
-        {blips.map(({ job, tone, label, left, top, delay }) => (
+        {blips.map(({ job, tone, label, left, top, delay, annotated }) => (
           <span
             key={job.id}
             className={`radar-blip ${tone}`}
             style={{ left: `${left}%`, top: `${top}%`, animationDelay: `${delay}s`, animationDuration: `${SWEEP_SECONDS}s` }}
           >
             <i />
-            <b>JOB #{job.id}<em>{label}</em></b>
+            {annotated && <b>JOB #{job.id}<em>{label}</em></b>}
           </span>
         ))}
       </div>
