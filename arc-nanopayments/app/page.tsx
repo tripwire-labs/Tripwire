@@ -20,7 +20,7 @@ export default function Home() {
           <a className="signal-pill" href={explorer} target="_blank" rel="noopener noreferrer"><i /> Live on Arc testnet <ExternalLink size={12}/></a>
           <div className="hero-composition">
             <h1 className="hero-line hero-line-a">Payment that waits</h1>
-            <div className="hero-matrix" aria-hidden="true"><SettlementMatrix compact /></div>
+            <div className="hero-matrix" aria-hidden="true"><SettlementMatrix dense /></div>
             <h1 className="hero-line hero-line-b">for proof.</h1>
           </div>
           <p className="hero-copy"><strong>Tripwire escrows agent-to-agent USDC on Arc and releases it only on verified delivery</strong> — backed by a seller bond that gets slashed when delivery fails.</p>

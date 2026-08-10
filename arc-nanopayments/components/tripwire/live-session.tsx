@@ -54,8 +54,21 @@ export function LiveSession() {
   const [payments,setPayments]=useState<{refund?:string;slash?:string;total?:string;bondBefore?:string;bondAfter?:string}>({});
   const [explanation,setExplanation]=useState("Choose a seller to inspect the collateral they have put at risk before you buy anything.");
   const sessionId=useRef("");
+  const stageRef=useRef<HTMLDivElement>(null);
+  const firstPhase=useRef(true);
 
   useEffect(()=>{setVisitorId(visitorIdentity());const done=localStorage.getItem("tripwire-completed");if(done)setCompleted(JSON.parse(done));const jobs=localStorage.getItem("tripwire-jobs");if(jobs)setOwnedJobs(JSON.parse(jobs));},[]);
+  // Bring each new act into view. Skipped on first paint so landing on /live does not
+  // yank the page, and offset by the sticky nav height so the act heading is never clipped.
+  useEffect(()=>{
+    if(firstPhase.current){firstPhase.current=false;return}
+    const node=stageRef.current;
+    if(!node)return;
+    const reduced=window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const top=node.getBoundingClientRect().top+window.scrollY-84;
+    window.scrollTo({top:Math.max(0,top),behavior:reduced?"auto":"smooth"});
+  },[phase]);
+
   const sellers=sellersQuery.data?.sellers??[];
   const latest=events.at(-1);
 
@@ -114,7 +127,7 @@ export function LiveSession() {
       <div className="live-strip"><div className="live-strip-label"><span className="micro-label">Settlement history</span><span className="micro-label">live</span></div><SettlementMatrix compact/></div>
       <div className="act-progress" aria-label="Session acts"><span className={phase==="market"?"active":"done"}>01 Choose a seller</span><span className={phase==="buy"?"active":phase==="verdict"||phase==="outcome"?"done":""}>02 Buy the service</span><span className={phase==="verdict"||phase==="outcome"?"active":""}>03 Deliver your verdict</span></div>
       <div className="session-layout">
-        <div className="session-stage">
+        <div className="session-stage" ref={stageRef}>
           <AnimatePresence mode="wait">
             {phase==="market"&&<motion.section key="market" initial={{opacity:0,y:10}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-10}} transition={spring} className="act-panel"><div className="act-title"><div><p className="micro-label">Act I · Choose a seller</p><h1>Who gets your job?</h1><p>Three sellers. Three possible outcomes. Their collateral is real; their behaviour is not revealed in advance.</p></div><div className="completion-markers" aria-label={`${completed.length} of 3 sellers completed`}>{["meridian","halcyon","vantage"].map(key=><i key={key} className={completed.includes(key)?"done":""}>{completed.includes(key)?<Check size={11}/>:null}</i>)}</div></div>
               {sellersQuery.loading?<div className="seller-grid">{[1,2,3].map(x=><div className="seller-card skeleton-card" key={x}/>)}</div>:sellersQuery.error&&!sellers.length?<div className="error-panel"><p>Seller bonds could not be read from Arc.</p><button className="pill pill-secondary" onClick={sellersQuery.retry}>Retry live read</button></div>:<div className="seller-grid">{sellers.map(seller=><SellerCard key={seller.key} seller={seller} completed={completed.includes(seller.key)} onChoose={()=>chooseSeller(seller)}/>)}</div>}

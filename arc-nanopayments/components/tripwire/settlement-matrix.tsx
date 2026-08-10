@@ -16,7 +16,7 @@ function statusClass(job: MatrixJob) {
   return "idle";
 }
 
-export function SettlementMatrix({ jobs: supplied, compact = false, onSelect }: { jobs?: MatrixJob[]; compact?: boolean; onSelect?: (id: string) => void }) {
+export function SettlementMatrix({ jobs: supplied, compact = false, dense = false, onSelect }: { jobs?: MatrixJob[]; compact?: boolean; dense?: boolean; onSelect?: (id: string) => void }) {
   const polled = usePolling<JobsResponse>("/api/live/jobs");
   const jobs = useMemo(() => supplied ?? polled.data?.jobs ?? [], [supplied, polled.data?.jobs]);
   const cells = useMemo(() => {
@@ -26,10 +26,10 @@ export function SettlementMatrix({ jobs: supplied, compact = false, onSelect }: 
     // the real settlements were lost. Scaling the padding with the job count keeps the field
     // looking like a canvas filling up rather than a broken chart, while still leaving
     // visible headroom so growth is legible.
-    const minimum = compact ? 36 : 56;
+    const minimum = dense ? 150 : compact ? 36 : 56;
     const total = Math.max(minimum, Math.ceil((live.length * 2.2) / 14) * 14);
     return [...live.map((job) => ({ job, key: `job-${job.id}` })), ...Array.from({ length: Math.max(0, total - live.length) }, (_, index) => ({ job: undefined, key: `idle-${index}` }))];
-  }, [jobs, compact]);
+  }, [jobs, compact, dense]);
   // Pulse a glyph exactly once, when its job first appears — this is the page reacting to
   // the chain rather than to a re-render.
   const fresh = useNewlyAdded(useMemo(() => jobs.map((job) => job.id), [jobs]));
