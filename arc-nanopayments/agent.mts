@@ -151,7 +151,7 @@ console.log(`Job ${jobId} created (tx ${createTxHash})`);
 // sequential, guessable number, so without it anyone who saw or guessed a valid jobId
 // could redeem someone else's paid delivery.
 console.log("Retrying with jobId...");
-const jobSignature = await signJobId(walletClient, jobId);
+const jobSignature = await signJobId(walletClient, trustedJobEscrowAddress, jobId);
 const deliveryRes = await fetch(url, {
   ...requestInit(),
   headers: { ...requestInit().headers, "x-job-id": jobId.toString(), "x-job-signature": jobSignature },

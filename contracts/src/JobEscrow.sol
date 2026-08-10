@@ -100,6 +100,24 @@ contract JobEscrow {
     // touching SellerBond (which would otherwise reject the zero-amount calls) — same
     // reasoning as SellerBond's MAX_WITHDRAWAL_TIMELOCK having no floor.
     uint256 public constant MAX_MIN_BOND_RATIO_BPS = 10_000;
+    // Risk parameter: smallest job a buyer may create, in USDC atomic units (1000 = $0.001,
+    // matching the cheapest endpoint the demo backend prices). This exists for a security
+    // reason, not an economic one. Validation request hashes are public on the ERC-8004
+    // registry, and createJob consumes one permanently (validationRequestHashUsed). Without
+    // a floor, anyone could watch the registry and burn a seller's freshly-registered hash
+    // with a 1-unit job — a job so small its reservedBond rounds to zero, so it locks none
+    // of the attacker's capital either. That is a complete, near-free denial of service on
+    // a seller's ability to sell anything. A floor makes each burn cost the attacker a real
+    // amount they can only recover by disputing (which requires convincing the arbiter) or
+    // by waiting out claimTimeout — which pays the *seller*. Griefing therefore funds the
+    // victim. This prices the attack rather than eliminating it; that tradeoff is deliberate
+    // and disclosed.
+    uint256 public minJobAmount = 1000;
+    // Ceiling on minJobAmount (100 USDC), same role MAX_MIN_BOND_RATIO_BPS plays for the
+    // ratio: bounds a careless or compromised owner from setting a floor so high that
+    // createJob is bricked for every realistic job. No minimum — 0 disables the floor, which
+    // is a legitimate testing configuration.
+    uint256 public constant MAX_MIN_JOB_AMOUNT = 100e6;
     // Dispute window and timeout grace period, merged into one owner-settable duration: buyer
     // can release()/dispute() any time up to completionDeadline + responseWindow; after that,
     // anyone can claimTimeout().
@@ -143,6 +161,7 @@ contract JobEscrow {
     event JobTimedOut(uint256 indexed jobId);
     event SellerBondSet(address sellerBond);
     event MinBondRatioBpsUpdated(uint256 previous, uint256 current);
+    event MinJobAmountUpdated(uint256 previous, uint256 current);
     event ResponseWindowUpdated(uint64 previous, uint64 current);
     event ValidationRegistryEnabledUpdated(bool previous, bool current);
 
@@ -164,6 +183,7 @@ contract JobEscrow {
     error ResponseWindowElapsed(uint256 jobId, uint64 claimableAfter);
     error ResponseWindowNotElapsed(uint256 jobId, uint64 claimableAfter);
     error MinBondRatioTooHigh(uint256 requested, uint256 max);
+    error MinJobAmountTooHigh(uint256 requested, uint256 max);
     error ResponseWindowTooLong(uint64 requested, uint64 max);
     // Covers every way isValidationRequestValid can fail (unregistered hash, wrong
     // validator, wrong agent) — one distinct error type is enough for off-chain monitoring
@@ -176,6 +196,14 @@ contract JobEscrow {
     // the same hash. Global (not per-agent), matching the real registry's own requestHash
     // uniqueness scope.
     error ValidationRequestHashAlreadyUsed(bytes32 requestHash);
+    // See minJobAmount — dust jobs are a denial-of-service vector against the seller, not
+    // merely uneconomic, so they get their own distinct error rather than reusing ZeroAmount.
+    error JobAmountTooSmall(uint256 amount, uint256 minJobAmount);
+    // A job whose reservedBond rounds down to zero carries no collateral at all, which means
+    // no Tripwire guarantee — the buyer would be paying into an escrow with nothing backing a
+    // dispute. Rejected outright rather than silently accepted, EXCEPT when minBondRatioBps
+    // is itself zero, which is the deliberately-supported no-collateral demo configuration.
+    error BondRoundsToZero(uint256 amount, uint256 minBondRatioBps);
 
     // ------------------------------------------------------------- modifiers
 
@@ -245,6 +273,10 @@ contract JobEscrow {
         returns (uint256 jobId)
     {
         if (amount == 0) revert ZeroAmount();
+        // Checked separately from ZeroAmount above, which still stands on its own since
+        // minJobAmount may legitimately be configured to 0. See minJobAmount for why a floor
+        // exists at all — it is a DoS defence, not a business rule.
+        if (amount < minJobAmount) revert JobAmountTooSmall(amount, minJobAmount);
         if (completionDeadline <= block.timestamp) revert DeadlineNotInFuture(completionDeadline);
         // Upper-bounds completionDeadline so completionDeadline + responseWindow can never
         // overflow uint64 below (see MAX_JOB_DURATION) — without this, a deadline near
@@ -267,9 +299,15 @@ contract JobEscrow {
             if (!isValidationRequestValid(validationRequestHash, sellerAgentId)) {
                 revert ValidationRequestInvalid(validationRequestHash, sellerAgentId);
             }
-            // One requestHash, one job — see ValidationRequestHashAlreadyUsed. Marked here,
-            // not left implicit, so reuse fails loudly instead of silently corrupting a
-            // later attestation.
+        }
+        // One requestHash, one job — see ValidationRequestHashAlreadyUsed. Gated on the hash
+        // being non-zero rather than on validationRegistryEnabled: bytes32(0) is the
+        // placeholder every job carries while the registry is disabled, so keying off the
+        // flag would either let two real hashes collide across a toggle (one job's exit
+        // attestation silently overwriting another's on the same hash) or, if marked
+        // unconditionally, make the second placeholder job collide with the first. Checking
+        // the hash itself is what actually distinguishes "no hash" from "a real hash."
+        if (validationRequestHash != bytes32(0)) {
             if (validationRequestHashUsed[validationRequestHash]) {
                 revert ValidationRequestHashAlreadyUsed(validationRequestHash);
             }
@@ -286,6 +324,11 @@ contract JobEscrow {
         // zero when minBondRatioBps is 0 (see the guard below) — a deliberately supported
         // demo/testing configuration, not an edge case to reject.
         uint256 reservedBond = (amount * minBondRatioBps) / 10_000;
+        // Integer division rounds down, so a small enough amount produces zero collateral
+        // even though a non-zero ratio was configured — a job with no bond behind it, which
+        // is precisely the thing this contract exists to prevent. Only reachable when the
+        // owner has deliberately set minBondRatioBps to 0 otherwise (see BondRoundsToZero).
+        if (minBondRatioBps > 0 && reservedBond == 0) revert BondRoundsToZero(amount, minBondRatioBps);
 
         jobId = nextJobId++;
         jobs[jobId] = Job({
@@ -438,6 +481,19 @@ contract JobEscrow {
         }
         emit MinBondRatioBpsUpdated(minBondRatioBps, newRatioBps);
         minBondRatioBps = newRatioBps;
+    }
+
+    /// @notice Update the smallest job amount a buyer may create. Applies to jobs created
+    /// after the change — already-active jobs are unaffected. Capped at MAX_MIN_JOB_AMOUNT.
+    /// See minJobAmount for why this parameter exists (validation-hash burn DoS), which is
+    /// also why it belongs to the owner rather than being a fixed constant: the right floor
+    /// depends on what a seller's endpoints actually cost.
+    function setMinJobAmount(uint256 newMinJobAmount) external onlyOwner {
+        if (newMinJobAmount > MAX_MIN_JOB_AMOUNT) {
+            revert MinJobAmountTooHigh(newMinJobAmount, MAX_MIN_JOB_AMOUNT);
+        }
+        emit MinJobAmountUpdated(minJobAmount, newMinJobAmount);
+        minJobAmount = newMinJobAmount;
     }
 
     /// @notice Update the combined dispute window / timeout grace period. Applies to jobs

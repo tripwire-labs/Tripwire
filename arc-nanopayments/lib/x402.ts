@@ -21,6 +21,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { keccak256, toBytes } from "viem";
 import { getJob, JobStatus, recoverJobIdSigner } from "./jobEscrow";
+import { checkRateLimit, clientIpFrom } from "./rateLimit";
 import { registerValidationRequest } from "./validationRegistry";
 
 const supabase = createClient(
@@ -95,6 +96,20 @@ export function withGateway(
     // No jobId yet — buyer hasn't created a job. Register a real validation request
     // naming JobEscrow as validator, then tell them what to create one against.
     if (!jobIdHeader) {
+      // Rate-limited BEFORE the registry call, not after: registering a validation request
+      // sends a real transaction paid for in USDC from the seller's wallet, so an
+      // unauthenticated caller could otherwise drain that wallet with a curl loop. See
+      // lib/rateLimit.ts for the full reasoning and the MVP caveats.
+      const ip = clientIpFrom(req.headers);
+      const limit = checkRateLimit(ip);
+      if (!limit.allowed) {
+        console.warn(`[escrow] rate-limited 402 for ${endpoint} from ${ip} (${limit.reason})`);
+        return NextResponse.json(
+          { error: "Too many quote requests — each one costs the seller an on-chain transaction." },
+          { status: 429, headers: { "retry-after": String(limit.retryAfterSeconds) } },
+        );
+      }
+
       console.log(`[escrow] 402 Job Required: ${endpoint}`);
 
       const requestHash = generateRequestHash(endpoint);
@@ -162,7 +177,7 @@ export function withGateway(
 
     let signer: `0x${string}`;
     try {
-      signer = await recoverJobIdSigner(jobId, jobSignature as `0x${string}`);
+      signer = await recoverJobIdSigner(JOB_ESCROW_ADDRESS, jobId, jobSignature as `0x${string}`);
     } catch {
       return NextResponse.json({ error: "x-job-signature is not a valid signature" }, { status: 400 });
     }
@@ -189,11 +204,43 @@ export function withGateway(
       );
     }
 
+    // One delivery per job, enforced by the primary key on job_deliveries rather than by a
+    // read-then-write check here — two concurrent requests for the same jobId would both
+    // pass a read-then-write check, and only the database can serialize them.
+    //
+    // This has to happen BEFORE the handler runs. A job stays Active until the buyer calls
+    // release(), so without this the same jobId and signature could be replayed
+    // indefinitely: one payment, unlimited copies of the paid content, with the buyer's
+    // rational move being to never release at all. The tradeoff of claiming the slot first
+    // is that a handler which throws afterwards burns the delivery; that is the right way
+    // round for paid content, and these handlers are pure local computation with no
+    // external calls to fail on.
+    const { error: deliveryError } = await supabase.from("job_deliveries").insert({
+      job_id: jobId.toString(),
+      endpoint,
+      buyer: job.buyer,
+    });
+    if (deliveryError) {
+      // 23505 is Postgres' unique_violation — the job was already delivered.
+      if (deliveryError.code === "23505") {
+        console.warn(`[escrow] replay rejected: job ${jobId} was already delivered`);
+        return NextResponse.json(
+          { error: `Job ${jobId} has already been delivered — each job pays for one delivery.` },
+          { status: 409 },
+        );
+      }
+      // Any other database failure is a real outage. Fail closed: delivering anyway would
+      // silently reopen the unlimited-replay hole this check exists to close.
+      console.error("Failed to claim delivery slot:", deliveryError.message);
+      return NextResponse.json({ error: "Failed to record delivery" }, { status: 500 });
+    }
+
     try {
       // Record the job as settled in the same store the old settlement events used, so
       // the existing realtime dashboard keeps working off escrow jobs instead of Gateway
-      // settlements. A logging failure here must never block a delivery the buyer has
-      // already legitimately paid and authenticated for.
+      // settlements. Unlike the delivery claim above, a failure here must never block a
+      // delivery the buyer has already legitimately paid and authenticated for — this is
+      // dashboard telemetry, not an authorization check.
       const { error } = await supabase.from("payment_events").insert({
         endpoint,
         payer: job.buyer,

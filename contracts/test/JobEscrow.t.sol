@@ -60,6 +60,7 @@ contract JobEscrowTest is Test {
     event JobTimedOut(uint256 indexed jobId);
     event SellerBondSet(address sellerBond);
     event MinBondRatioBpsUpdated(uint256 previous, uint256 current);
+    event MinJobAmountUpdated(uint256 previous, uint256 current);
     event ResponseWindowUpdated(uint64 previous, uint64 current);
     event ValidationRegistryEnabledUpdated(bool previous, bool current);
 
@@ -839,5 +840,123 @@ contract JobEscrowTest is Test {
         jobEscrow.resolveDispute(jobId, true);
 
         assertEq(usdc.balanceOf(buyer), AMOUNT, "buyer should get the escrow refund with no bond to slash");
+    }
+
+    // ------------------------------------------------- minJobAmount / dust-job DoS defence
+
+    /// Regression test for the audit's headline finding, kept as the PoC that originally
+    /// demonstrated it. Validation request hashes are public on the registry and createJob
+    /// consumes one permanently, so before minJobAmount existed, anyone could watch the
+    /// registry and burn a seller's freshly-registered hash with a 1-unit job — costing the
+    /// attacker 0.000001 USDC and locking none of their capital (reservedBond rounded to
+    /// zero), while permanently denying the real buyer. This asserts the burn now fails.
+    function test_RevertWhen_StrangerBurnsSellerHashWithDustJob() public {
+        jobEscrow.setValidationRegistryEnabled(true);
+        bytes32 requestHash = keccak256("seller-quote-for-real-buyer");
+        validationRegistry.validationRequest(address(jobEscrow), SELLER_AGENT_ID, "/api/premium/dataset", requestHash);
+
+        // The attacker needs no bond and almost no money — that was the whole problem.
+        usdc.mint(stranger, 1);
+        vm.startPrank(stranger);
+        usdc.approve(address(jobEscrow), 1);
+        vm.expectRevert(abi.encodeWithSelector(JobEscrow.JobAmountTooSmall.selector, 1, jobEscrow.minJobAmount()));
+        jobEscrow.createJob(SELLER_AGENT_ID, 1, completionDeadline, requestHash);
+        vm.stopPrank();
+
+        // The hash survived the attempt, so the buyer it was quoted to can still use it.
+        vm.prank(buyer);
+        uint256 jobId = jobEscrow.createJob(SELLER_AGENT_ID, AMOUNT, completionDeadline, requestHash);
+        (,,,,,,, JobEscrow.JobStatus status,,) = jobEscrow.jobs(jobId);
+        assertEq(uint8(status), uint8(JobEscrow.JobStatus.Active), "real buyer's job should still be creatable");
+    }
+
+    /// The floor is enforced at the boundary, not just for absurdly small values.
+    function test_CreateJobAtExactlyMinJobAmountSucceeds() public {
+        jobEscrow.setMinJobAmount(1_000_000);
+        // 20% of 1 USDC is 0.2 USDC, comfortably inside SELLER_STAKE.
+        vm.prank(buyer);
+        uint256 jobId = jobEscrow.createJob(SELLER_AGENT_ID, 1_000_000, completionDeadline, bytes32(0));
+        (,,,, uint256 reservedBond,,,,,) = jobEscrow.jobs(jobId);
+        assertEq(reservedBond, 200_000, "bond should be 20% of the job amount");
+    }
+
+    /// A job whose bond rounds down to zero has no collateral behind it at all, so it isn't a
+    /// Tripwire job in any meaningful sense. Rejected independently of minJobAmount, which is
+    /// why this test lowers the floor out of the way first.
+    function test_RevertWhen_CreateJobBondRoundsToZero() public {
+        jobEscrow.setMinJobAmount(0);
+        // At 20%, any amount below 5 units rounds to zero collateral.
+        vm.prank(buyer);
+        vm.expectRevert(abi.encodeWithSelector(JobEscrow.BondRoundsToZero.selector, 4, uint256(2000)));
+        jobEscrow.createJob(SELLER_AGENT_ID, 4, completionDeadline, bytes32(0));
+    }
+
+    /// The zero-bond rejection must not break the deliberately-supported 0%-ratio demo
+    /// configuration, where every job legitimately has zero collateral.
+    function test_ZeroBondRatioStillAllowsDustJobs() public {
+        jobEscrow.setMinBondRatioBps(0);
+        jobEscrow.setMinJobAmount(0);
+
+        vm.prank(buyer);
+        uint256 jobId = jobEscrow.createJob(SELLER_AGENT_ID, 1, completionDeadline, bytes32(0));
+        (,,,, uint256 reservedBond,,,,,) = jobEscrow.jobs(jobId);
+        assertEq(reservedBond, 0, "0% ratio should still permit a zero-bond job");
+    }
+
+    function test_SetMinJobAmountEmitsAndApplies() public {
+        vm.expectEmit(false, false, false, true);
+        emit MinJobAmountUpdated(1000, 5000);
+        jobEscrow.setMinJobAmount(5000);
+        assertEq(jobEscrow.minJobAmount(), 5000, "minJobAmount should update");
+    }
+
+    function test_RevertWhen_SetMinJobAmountAboveMax() public {
+        uint256 max = jobEscrow.MAX_MIN_JOB_AMOUNT();
+        vm.expectRevert(abi.encodeWithSelector(JobEscrow.MinJobAmountTooHigh.selector, max + 1, max));
+        jobEscrow.setMinJobAmount(max + 1);
+    }
+
+    function test_RevertWhen_SetMinJobAmountNotOwner() public {
+        vm.prank(stranger);
+        vm.expectRevert(JobEscrow.NotOwner.selector);
+        jobEscrow.setMinJobAmount(5000);
+    }
+
+    // ------------------------------------------- requestHash reuse across the kill switch
+
+    /// The hash-consumption check keys off the hash being non-zero, not off
+    /// validationRegistryEnabled. Before that change, a hash consumed while the registry was
+    /// enabled could be reused after toggling the flag off — and once it was toggled back on,
+    /// both jobs would attest against the same requestHash, the later one silently
+    /// overwriting the earlier one's outcome.
+    function test_RevertWhen_ReusingHashAfterDisablingRegistry() public {
+        bytes32 requestHash = keccak256("reused-across-toggle");
+        _createJobWithValidHash(requestHash);
+
+        jobEscrow.setValidationRegistryEnabled(false);
+
+        usdc.mint(buyer, AMOUNT);
+        vm.startPrank(buyer);
+        usdc.approve(address(jobEscrow), AMOUNT);
+        vm.expectRevert(abi.encodeWithSelector(JobEscrow.ValidationRequestHashAlreadyUsed.selector, requestHash));
+        jobEscrow.createJob(SELLER_AGENT_ID, AMOUNT, completionDeadline, requestHash);
+        vm.stopPrank();
+    }
+
+    /// The counterpart: the bytes32(0) placeholder that every job carries while the registry
+    /// is disabled must NOT be treated as a consumed hash, or the second such job would
+    /// collide with the first and disabled mode would break entirely after one job.
+    function test_ZeroHashIsNotConsumedAndCanRepeat() public {
+        vm.prank(buyer);
+        jobEscrow.createJob(SELLER_AGENT_ID, AMOUNT, completionDeadline, bytes32(0));
+
+        usdc.mint(buyer, AMOUNT);
+        vm.startPrank(buyer);
+        usdc.approve(address(jobEscrow), AMOUNT);
+        uint256 secondJobId = jobEscrow.createJob(SELLER_AGENT_ID, AMOUNT, completionDeadline, bytes32(0));
+        vm.stopPrank();
+
+        (,,,,,,, JobEscrow.JobStatus status,,) = jobEscrow.jobs(secondJobId);
+        assertEq(uint8(status), uint8(JobEscrow.JobStatus.Active), "placeholder hash must be reusable");
     }
 }

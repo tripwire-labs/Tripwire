@@ -200,19 +200,37 @@ export async function disputeJob(
  * someone else's paid delivery. Signing binds the request to the wallet that actually
  * paid, the same role the old x402 payment-signature header used to serve.
  */
-function jobIdMessage(jobId: bigint): string {
-  return `Tripwire:job:${jobId}`;
+function jobIdMessage(jobEscrowAddress: `0x${string}`, jobId: bigint): string {
+  // chainId and the escrow address are part of the signed text, not decoration. A bare
+  // `Tripwire:job:<id>` has no domain: jobIds restart at 0 on every fresh deployment, so a
+  // signature captured against one JobEscrow stays valid against the next one — or against
+  // a mainnet deployment — for the same buyer and the same low jobId. Naming the exact
+  // contract and chain confines a signature to the one job it was actually made for. Same
+  // purpose as EIP-712's domain separator, done in a plain personal_sign message because
+  // that is all the signature needs to carry here.
+  return `Tripwire:chain:${arcTestnet.id}:escrow:${jobEscrowAddress.toLowerCase()}:job:${jobId}`;
 }
 
-/** Buyer-side: sign proof that this wallet is redeeming `jobId`. */
-export async function signJobId(walletClient: WalletClient, jobId: bigint): Promise<`0x${string}`> {
+/** Buyer-side: sign proof that this wallet is redeeming `jobId` on a specific deployment. */
+export async function signJobId(
+  walletClient: WalletClient,
+  jobEscrowAddress: `0x${string}`,
+  jobId: bigint,
+): Promise<`0x${string}`> {
   if (!walletClient.account) {
     throw new Error("signJobId requires a walletClient with an account");
   }
-  return walletClient.signMessage({ account: walletClient.account, message: jobIdMessage(jobId) });
+  return walletClient.signMessage({
+    account: walletClient.account,
+    message: jobIdMessage(jobEscrowAddress, jobId),
+  });
 }
 
 /** Seller-side: recovers the address that produced a signJobId() signature. */
-export async function recoverJobIdSigner(jobId: bigint, signature: `0x${string}`): Promise<`0x${string}`> {
-  return recoverMessageAddress({ message: jobIdMessage(jobId), signature });
+export async function recoverJobIdSigner(
+  jobEscrowAddress: `0x${string}`,
+  jobId: bigint,
+  signature: `0x${string}`,
+): Promise<`0x${string}`> {
+  return recoverMessageAddress({ message: jobIdMessage(jobEscrowAddress, jobId), signature });
 }
