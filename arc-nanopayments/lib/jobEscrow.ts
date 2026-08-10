@@ -1,14 +1,101 @@
 import { createPublicClient, http, recoverMessageAddress, type WalletClient } from "viem";
 import { arcTestnet } from "viem/chains";
 
-const ARC_TESTNET_RPC = "https://rpc.testnet.arc.network";
+export const ARC_TESTNET_RPC = "https://rpc.testnet.arc.network";
 
 // Minimal ABI fragment — just the calls either side of Tripwire actually makes (seller
 // reads `jobs`; buyer writes `createJob`/`release`/`dispute`). Copied from the real
 // compiled artifact (contracts/out/JobEscrow.sol/JobEscrow.json, gitignored so it can't
 // be imported directly), not hand-written from memory — same discipline the Solidity
 // side uses for its own minimal interfaces (ISellerBond, IIdentityRegistry).
-const JOB_ESCROW_ABI = [
+export const JOB_ESCROW_ABI = [
+  {
+    type: "event",
+    name: "JobCreated",
+    inputs: [
+      { name: "jobId", type: "uint256", indexed: true },
+      { name: "buyer", type: "address", indexed: true },
+      { name: "sellerAgentId", type: "uint256", indexed: true },
+      { name: "amount", type: "uint256", indexed: false },
+      { name: "reservedBond", type: "uint256", indexed: false },
+      { name: "completionDeadline", type: "uint64", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "JobReleased",
+    inputs: [{ name: "jobId", type: "uint256", indexed: true }],
+  },
+  {
+    type: "event",
+    name: "JobDisputed",
+    inputs: [
+      { name: "jobId", type: "uint256", indexed: true },
+      { name: "evidenceHash", type: "bytes32", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "JobResolved",
+    inputs: [
+      { name: "jobId", type: "uint256", indexed: true },
+      { name: "sellerAtFault", type: "bool", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "JobTimedOut",
+    inputs: [{ name: "jobId", type: "uint256", indexed: true }],
+  },
+  {
+    type: "function",
+    name: "nextJobId",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "minBondRatioBps",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "minJobAmount",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "responseWindow",
+    inputs: [],
+    outputs: [{ name: "", type: "uint64" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "validationRegistryEnabled",
+    inputs: [],
+    outputs: [{ name: "", type: "bool" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "sellerBond",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "ARBITER",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+    stateMutability: "view",
+  },
   {
     type: "function",
     name: "jobs",
@@ -52,6 +139,16 @@ const JOB_ESCROW_ABI = [
     inputs: [
       { name: "jobId", type: "uint256" },
       { name: "evidenceHash", type: "bytes32" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "resolveDispute",
+    inputs: [
+      { name: "jobId", type: "uint256" },
+      { name: "sellerAtFault", type: "bool" },
     ],
     outputs: [],
     stateMutability: "nonpayable",
@@ -192,6 +289,25 @@ export async function disputeJob(
   return txHash;
 }
 
+/** Arbiter-only dispute resolution. Kept here so the ABI has one source of truth. */
+export async function resolveDisputeJob(
+  walletClient: WalletClient,
+  jobEscrowAddress: `0x${string}`,
+  jobId: bigint,
+  sellerAtFault: boolean,
+): Promise<`0x${string}`> {
+  const { request } = await publicClient.simulateContract({
+    address: jobEscrowAddress,
+    abi: JOB_ESCROW_ABI,
+    functionName: "resolveDispute",
+    args: [jobId, sellerAtFault],
+    account: walletClient.account,
+  });
+  const txHash = await walletClient.writeContract(request);
+  await publicClient.waitForTransactionReceipt({ hash: txHash });
+  return txHash;
+}
+
 /**
  * The message a buyer signs to redeem a job's content, and a seller checks against
  * `job.buyer`. This is the actual authentication step: on its own, a jobId only proves
@@ -200,19 +316,37 @@ export async function disputeJob(
  * someone else's paid delivery. Signing binds the request to the wallet that actually
  * paid, the same role the old x402 payment-signature header used to serve.
  */
-function jobIdMessage(jobId: bigint): string {
-  return `Tripwire:job:${jobId}`;
+function jobIdMessage(jobEscrowAddress: `0x${string}`, jobId: bigint): string {
+  // chainId and the escrow address are part of the signed text, not decoration. A bare
+  // `Tripwire:job:<id>` has no domain: jobIds restart at 0 on every fresh deployment, so a
+  // signature captured against one JobEscrow stays valid against the next one — or against
+  // a mainnet deployment — for the same buyer and the same low jobId. Naming the exact
+  // contract and chain confines a signature to the one job it was actually made for. Same
+  // purpose as EIP-712's domain separator, done in a plain personal_sign message because
+  // that is all the signature needs to carry here.
+  return `Tripwire:chain:${arcTestnet.id}:escrow:${jobEscrowAddress.toLowerCase()}:job:${jobId}`;
 }
 
-/** Buyer-side: sign proof that this wallet is redeeming `jobId`. */
-export async function signJobId(walletClient: WalletClient, jobId: bigint): Promise<`0x${string}`> {
+/** Buyer-side: sign proof that this wallet is redeeming `jobId` on a specific deployment. */
+export async function signJobId(
+  walletClient: WalletClient,
+  jobEscrowAddress: `0x${string}`,
+  jobId: bigint,
+): Promise<`0x${string}`> {
   if (!walletClient.account) {
     throw new Error("signJobId requires a walletClient with an account");
   }
-  return walletClient.signMessage({ account: walletClient.account, message: jobIdMessage(jobId) });
+  return walletClient.signMessage({
+    account: walletClient.account,
+    message: jobIdMessage(jobEscrowAddress, jobId),
+  });
 }
 
 /** Seller-side: recovers the address that produced a signJobId() signature. */
-export async function recoverJobIdSigner(jobId: bigint, signature: `0x${string}`): Promise<`0x${string}`> {
-  return recoverMessageAddress({ message: jobIdMessage(jobId), signature });
+export async function recoverJobIdSigner(
+  jobEscrowAddress: `0x${string}`,
+  jobId: bigint,
+  signature: `0x${string}`,
+): Promise<`0x${string}`> {
+  return recoverMessageAddress({ message: jobIdMessage(jobEscrowAddress, jobId), signature });
 }

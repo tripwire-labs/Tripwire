@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Tripwire">
+  <!-- Warm near-black ground, the same #0D0905 the site uses — not pure black, so the mark
+       reads as ours rather than as a default dark square. -->
+  <rect width="64" height="64" rx="14" fill="#0D0905"/>
+  <!-- The crosshair from the wordmark and the background lattice. Kept heavy and generously
+       padded so it still reads at 16px in a browser tab. -->
+  <g stroke="#D8F21A" stroke-width="7" stroke-linecap="square">
+    <path d="M32 15 V49"/>
+    <path d="M15 32 H49"/>
+  </g>
+</svg>

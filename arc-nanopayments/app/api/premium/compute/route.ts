@@ -18,6 +18,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { withGateway } from "@/lib/x402";
+import { getSellerForEndpoint } from "@/lib/live/config";
 
 const handler = async (req: NextRequest) => {
   const body = await req.json().catch(() => ({}));
@@ -35,4 +36,6 @@ const handler = async (req: NextRequest) => {
   });
 };
 
-export const POST = withGateway(handler, "$0.0003", "/api/premium/compute");
+const seller = getSellerForEndpoint("/api/premium/dataset");
+if (!seller) throw new Error("Compute seller is not configured");
+export const POST = withGateway(handler, "$0.003", "/api/premium/compute", { sellerAgentId: seller.agentId, archetype: seller.archetype });

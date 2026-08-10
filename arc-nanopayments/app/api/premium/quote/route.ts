@@ -18,6 +18,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { withGateway } from "@/lib/x402";
+import { getSellerForEndpoint } from "@/lib/live/config";
 
 const handler = async (_req: NextRequest) => {
   return NextResponse.json({
@@ -28,4 +29,6 @@ const handler = async (_req: NextRequest) => {
   });
 };
 
-export const GET = withGateway(handler, "$0.001", "/api/premium/quote");
+const seller = getSellerForEndpoint("/api/premium/quote");
+if (!seller) throw new Error("Quote seller is not configured");
+export const GET = withGateway(handler, seller.price, seller.endpoint, { sellerAgentId: seller.agentId, archetype: seller.archetype });
