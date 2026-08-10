@@ -5,11 +5,18 @@
 # SellerBond.reserve, which reverts against a zero balance, so every job creation fails
 # until a bond is posted.
 #
-# Usage:  ./post-bond.sh [amount-in-usdc]     (default: 0.05)
+# Usage:  ./post-bond.sh [amount-in-usdc] [agent-id]
+#         defaults: 0.05 USDC, and $SELLER_AGENT_ID from .env.local
+#
+# The agent-id argument exists because the demo marketplace runs three seller agents — one
+# that delivers correctly, one that returns wrong content, and one that never delivers — so
+# a visitor can experience each failure mode. All three are owned by the same seller wallet
+# (the ERC-8004 registry's register() has no per-address limit), but SellerBond keys every
+# balance on agentId, so their bonds are genuinely independent and slash separately.
 #
 # Sizing: reservedBond is minBondRatioBps (20%) of the job amount, so the priciest demo
-# endpoint ($0.03) reserves $0.006. 0.05 USDC covers every demo job several times over
-# while leaving the seller's thin faucet balance intact for gas.
+# endpoint ($0.03) reserves $0.006. Deliberately post *unequal* bonds across the three so the
+# marketplace cards read as real per-seller choices rather than a templated list.
 
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
@@ -17,6 +24,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 require_env SELLER_PRIVATE_KEY SELLER_ADDRESS
 
 BOND_USDC="${1:-0.05}"
+# Override the sourced SELLER_AGENT_ID when a second argument is given. common.sh's helpers
+# (bond_of) read this variable, so setting it here is enough to retarget the whole script.
+SELLER_AGENT_ID="${2:-$SELLER_AGENT_ID}"
 # parseUnits equivalent: 6-decimal USDC atomic units.
 BOND_AMOUNT="$(cast --to-wei "$BOND_USDC" mwei)"
 
