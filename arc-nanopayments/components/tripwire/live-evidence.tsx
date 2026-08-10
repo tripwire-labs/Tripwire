@@ -5,6 +5,7 @@ import { ChevronDown, ExternalLink } from "lucide-react";
 import { CopyValue, middle } from "./copy-value";
 import { useFreshness, usePolling } from "./live-hooks";
 import { SettlementMatrix } from "./settlement-matrix";
+import { CountUp } from "./motion";
 
 type State = { jobsSettled:number; totalJobs:number; escrowed:string; bond:{gross:string;reserved:string;free:string}; bondRatio:number; responseWindowSeconds:number; registryEnabled:boolean; updatedAt:string; identities:{jobEscrow:string;sellerBond:string;arbiter:string;primarySellerAgentId:string} };
 type Job = { id:string;endpoint:string|null;amount:string;reservedBond:string;buyer:string;status:number;statusLabel?:string;sellerAtFault?:boolean;responseDeadline:number;completionDeadline:number;validationRequestHash:string;evidenceHash:string;deliveredAt:string|null;proofs:Record<string,string> };
@@ -39,11 +40,15 @@ export function EvidenceZone({ yours }: { yours: string[] }) {
     return () => { window.clearTimeout(initial); clearInterval(timer); };
   }, []);
   function selectJob(id: string) { setExpanded(id); document.getElementById(`job-${id}`)?.scrollIntoView({ behavior: "smooth", block: "center" }); }
+  // Numeric tiles animate to their new value on each poll — a figure that ticks reads as
+  // live, a figure that jumps reads as a re-render. Non-numeric tiles (ratio, window,
+  // registry state) stay static because they almost never change and counting them would be
+  // motion for its own sake.
   const tiles = state.data ? [
-    { label: "Jobs settled", value: String(state.data.jobsSettled) },
-    { label: "USDC in escrow", value: `${state.data.escrowed} USDC` },
-    { label: "Seller bond posted", value: `${state.data.bond.gross} USDC` },
-    { label: "Reserved / free", value: `${state.data.bond.reserved} / ${state.data.bond.free}` },
+    { label: "Jobs settled", value: <CountUp value={state.data.jobsSettled} decimals={0}/> },
+    { label: "USDC in escrow", value: <><CountUp value={state.data.escrowed}/> USDC</> },
+    { label: "Seller bond posted", value: <><CountUp value={state.data.bond.gross}/> USDC</> },
+    { label: "Reserved / free", value: <><CountUp value={state.data.bond.reserved}/> / <CountUp value={state.data.bond.free}/></> },
     { label: "Bond ratio", value: `${state.data.bondRatio}%` },
     { label: "Response window", value: `${state.data.responseWindowSeconds / 3600}h` },
     { label: "Registry", value: state.data.registryEnabled ? "● ENFORCING" : "● BYPASSED" },

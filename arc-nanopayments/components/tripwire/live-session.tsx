@@ -6,6 +6,8 @@ import { ArrowRight, Check, Clock3, ExternalLink, TriangleAlert } from "lucide-r
 import { CopyValue, middle } from "./copy-value";
 import { usePolling } from "./live-hooks";
 import { EvidenceZone } from "./live-evidence";
+import { CountUp } from "./motion";
+import { SettlementMatrix } from "./settlement-matrix";
 
 type Seller = { key:string;name:string;archetype:"honest"|"faulty"|"absent";agentId:string;endpoint:string;price:string;service:string;description:string;bond:{gross:string;reserved:string;free:string};jobsSettled:number;disputes:number };
 type SellersResponse = { sellers: Seller[]; updatedAt:string };
@@ -108,7 +110,8 @@ export function LiveSession() {
   const activeStep=latest?.type==="delivery"?4:events.some(e=>e.type==="funded")?3:events.some(e=>e.type==="validation")?2:events.length?1:0;
   return <>
     <section className="live-shell shell-wide">
-      <div className="identity-card"><div className="identity-main"><span className="micro-label">You are</span><b>buyer-agent #851888</b><span>balance <strong>{stateQuery.data?.buyerBalance??"—"} USDC</strong></span><i/> <span>Arc testnet</span>{replay&&<em>Replay of job #1</em>}</div><p>We&apos;re lending you a funded buyer agent for this session — you&apos;d otherwise need testnet USDC of your own. Everything it does on-chain is real.</p></div>
+      <div className="identity-card"><div className="identity-main"><span className="micro-label">You are</span><b>buyer-agent #851888</b><span>balance <strong>{stateQuery.data?.buyerBalance?<><CountUp value={stateQuery.data.buyerBalance}/> USDC</>:"—"}</strong></span><i/> <span>Arc testnet</span>{replay&&<em>Replay of job #1</em>}</div><p>We&apos;re lending you a funded buyer agent for this session — you&apos;d otherwise need testnet USDC of your own. Everything it does on-chain is real.</p></div>
+      <div className="live-strip"><div className="live-strip-label"><span className="micro-label">Settlement history</span><span className="micro-label">live</span></div><SettlementMatrix compact/></div>
       <div className="act-progress" aria-label="Session acts"><span className={phase==="market"?"active":"done"}>01 Choose a seller</span><span className={phase==="buy"?"active":phase==="verdict"||phase==="outcome"?"done":""}>02 Buy the service</span><span className={phase==="verdict"||phase==="outcome"?"active":""}>03 Deliver your verdict</span></div>
       <div className="session-layout">
         <div className="session-stage">
@@ -141,7 +144,7 @@ function SellerCard({ seller, completed, onChoose }: { seller:Seller;completed:b
   return <article className={`seller-card ${completed ? "completed" : ""}`}>
     <div className="seller-top"><span className="micro-label">Agent <a href={explorerAgent(seller.agentId)} target="_blank" rel="noopener noreferrer">#{seller.agentId}</a></span>{completed && <span className="completed-chip"><Check size={10}/> done</span>}</div>
     <h2>{seller.name}</h2><p>{seller.description}</p>
-    <div className="bond-figure"><span>Bond posted</span><b>{seller.bond.gross} USDC</b><div className="bond-bar"><i style={{ width: `${reserved}%` }}/></div><small>{seller.bond.free} free · {seller.bond.reserved} reserved</small></div>
+    <div className="bond-figure"><span>Bond posted</span><b><CountUp value={seller.bond.gross}/> USDC</b><div className="bond-bar"><i style={{ width: `${reserved}%` }}/></div><small><CountUp value={seller.bond.free}/> free · <CountUp value={seller.bond.reserved}/> reserved</small></div>
     <dl><div><dt>Jobs settled</dt><dd>{seller.jobsSettled}</dd></div><div><dt>Disputes lost</dt><dd>{seller.disputes}</dd></div></dl>
     <div className="service-row"><div><span className="micro-label">Service</span><b>{seller.service}</b></div><span>{seller.price} USDC</span></div>
     <button className="pill pill-secondary" onClick={onChoose}>Choose {seller.name.split(" ")[0]}</button>

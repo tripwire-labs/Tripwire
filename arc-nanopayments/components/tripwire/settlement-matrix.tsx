@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { usePolling } from "./live-hooks";
+import { useNewlyAdded } from "./motion";
 
 export type MatrixJob = { id: string; status: number; sellerAtFault?: boolean; amount?: string };
 type JobsResponse = { jobs: MatrixJob[]; updatedAt: string };
@@ -29,6 +30,9 @@ export function SettlementMatrix({ jobs: supplied, compact = false, onSelect }: 
     const total = Math.max(minimum, Math.ceil((live.length * 2.2) / 14) * 14);
     return [...live.map((job) => ({ job, key: `job-${job.id}` })), ...Array.from({ length: Math.max(0, total - live.length) }, (_, index) => ({ job: undefined, key: `idle-${index}` }))];
   }, [jobs, compact]);
+  // Pulse a glyph exactly once, when its job first appears — this is the page reacting to
+  // the chain rather than to a re-render.
+  const fresh = useNewlyAdded(useMemo(() => jobs.map((job) => job.id), [jobs]));
   const [active, setActive] = useState(true);
   useEffect(() => {
     const sync = () => setActive(!document.hidden);
@@ -38,7 +42,7 @@ export function SettlementMatrix({ jobs: supplied, compact = false, onSelect }: 
   return (
     <div className={`settlement-matrix ${compact ? "compact" : ""} ${active ? "is-animating" : "is-paused"}`} aria-label={`${jobs.length} on-chain settlement jobs`}>
       {cells.map(({ job, key }, index) => job ? (
-        <button key={key} className={`matrix-glyph ${statusClass(job)}`} style={{ "--delay": `${-(index % 17)}s`, "--duration": `${10 + (index % 9)}s` } as React.CSSProperties} title={`Job ${job.id} · ${job.amount ?? "—"} USDC`} onClick={() => onSelect?.(job.id)} aria-label={`Job ${job.id}`}><span>+</span></button>
+        <button key={key} className={`matrix-glyph ${statusClass(job)}${fresh.has(job.id) ? " is-new" : ""}`} style={{ "--delay": `${-(index % 17)}s`, "--duration": `${10 + (index % 9)}s` } as React.CSSProperties} title={`Job ${job.id} · ${job.amount ?? "—"} USDC`} onClick={() => onSelect?.(job.id)} aria-label={`Job ${job.id}`}><span>+</span></button>
       ) : <i key={key} className="matrix-glyph idle" style={{ "--delay": `${-(index % 19)}s`, "--duration": `${12 + (index % 8)}s` } as React.CSSProperties}>·</i>)}
     </div>
   );

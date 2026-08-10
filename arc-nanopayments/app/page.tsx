@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Reveal } from "@/components/tripwire/motion";
 import { ArrowRight, ExternalLink } from "lucide-react";
 import { Nav } from "@/components/tripwire/nav";
 import { Footer } from "@/components/tripwire/footer";
@@ -27,7 +28,7 @@ export default function Home() {
           <p className="hero-proof micro-label">REAL CONTRACTS · REAL TESTNET USDC · ONE BORROWED BUYER IDENTITY</p>
         </section>
 
-        <section className="section shell" id="gap">
+        <Reveal><section className="section shell" id="gap">
           <div className="section-heading"><p className="micro-label">01 / The gap</p><h2>The payment succeeded. <span>Did the work?</span></h2><p>Agent payment rails can prove that money moved. They cannot prove the thing purchased was worth paying for.</p></div>
           <div className="marketing-grid">
             <article><span className="card-index">01</span><h3>x402 pushes are irreversible.</h3><p>Conditional escrow transfers are named as future work in the x402 specification, not part of today&apos;s push-payment flow.</p></article>
@@ -36,17 +37,17 @@ export default function Home() {
           </div>
         </section>
 
-        <section className="section shell" id="lifecycle">
+        </Reveal><Reveal><section className="section shell" id="lifecycle">
           <div className="section-heading"><p className="micro-label">02 / The lifecycle</p><h2>Bond. Escrow. <span>Verified settlement.</span></h2><p>Every live value below is read from the deployed contracts.</p></div>
           <LifecycleCards />
         </section>
 
-        <section className="section shell" id="mechanism">
+        </Reveal><Reveal><section className="section shell" id="mechanism">
           <div className="section-heading"><p className="micro-label">03 / The mechanism</p><h2>Money moves on an outcome, <span>not a request.</span></h2></div>
           <MechanismDiagram />
         </section>
 
-        <section className="section shell">
+        </Reveal><Reveal><section className="section shell">
           <div className="slash-panel">
             <div><p className="micro-label alarm-text">Recorded on Arc · Job 1</p><h2>The seller failed. The buyer was paid twice.</h2><p className="muted">Arbiter ruled the seller at fault. The bond is the tripwire.</p></div>
             <div className="slash-ledger">
@@ -59,14 +60,14 @@ export default function Home() {
           </div>
         </section>
 
-        <section className="section shell built-on">
+        </Reveal><Reveal><section className="section shell built-on">
           <div className="section-heading"><p className="micro-label">04 / Built on</p><h2>Extending the rails <span>agents already use.</span></h2></div>
           <div className="built-row">
             <div><b>Arc</b><span>USDC settlement chain</span></div><div><b>Circle x402</b><span>Discovery, pricing, delivery</span></div><div><b>ERC-8004</b><span>Identity and attestations</span></div><div><b>Agent Wallets</b><span>Custody upstream of escrow</span></div>
           </div>
         </section>
 
-        <section className="section final-cta shell"><p className="micro-label">The buyer&apos;s seat is ready</p><h2>Choose a seller. See what arrives. <span>Decide who gets paid.</span></h2><Link className="pill pill-primary" href="/live">Start the live session <ArrowRight size={14}/></Link></section>
+        </Reveal><Reveal><section className="section final-cta shell"><p className="micro-label">The buyer&apos;s seat is ready</p><h2>Choose a seller. See what arrives. <span>Decide who gets paid.</span></h2><Link className="pill pill-primary" href="/live">Start the live session <ArrowRight size={14}/></Link></section></Reveal>
       </main>
       <Footer />
     </>
