@@ -16,6 +16,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { SiteField } from "@/components/tripwire/hero-field";
 import type { Metadata } from "next";
 import { Geist, Geist_Mono, Instrument_Serif } from "next/font/google";
 import "./globals.css";
@@ -46,7 +47,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${geistSans.variable} ${geistMono.variable} ${instrumentSerif.variable}`}>{children}</body>
+      <body className={`${geistSans.variable} ${geistMono.variable} ${instrumentSerif.variable}`}><SiteField />{children}</body>
     </html>
   );
 }

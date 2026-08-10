@@ -4,7 +4,7 @@ import { ArrowRight, ExternalLink } from "lucide-react";
 import { Nav } from "@/components/tripwire/nav";
 import { Footer } from "@/components/tripwire/footer";
 import { SettlementMatrix } from "@/components/tripwire/settlement-matrix";
-import { HeroField } from "@/components/tripwire/hero-field";
+
 import { MechanismDiagram } from "@/components/tripwire/mechanism-diagram";
 import { LifecycleCards } from "@/components/tripwire/home-live";
 
@@ -18,7 +18,7 @@ export default function Home() {
       <main>
         <section className="hero-section shell">
           <div className="hero-grid-bg" aria-hidden="true" />
-          <HeroField />
+
           <a className="signal-pill" href={explorer} target="_blank" rel="noopener noreferrer"><i /> Live on Arc testnet <ExternalLink size={12}/></a>
           <div className="hero-composition">
             <h1 className="hero-line hero-line-a">Payment that waits</h1>
