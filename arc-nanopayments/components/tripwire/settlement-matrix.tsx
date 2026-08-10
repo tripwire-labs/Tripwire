@@ -42,8 +42,8 @@ export function SettlementMatrix({ jobs: supplied, compact = false, dense = fals
   return (
     <div className={`settlement-matrix ${compact ? "compact" : ""} ${active ? "is-animating" : "is-paused"}`} aria-label={`${jobs.length} on-chain settlement jobs`}>
       {cells.map(({ job, key }, index) => job ? (
-        <button key={key} className={`matrix-glyph ${statusClass(job)}${fresh.has(job.id) ? " is-new" : ""}`} style={{ "--delay": `${-(index % 17)}s`, "--duration": `${10 + (index % 9)}s` } as React.CSSProperties} title={`Job ${job.id} · ${job.amount ?? "—"} USDC`} onClick={() => onSelect?.(job.id)} aria-label={`Job ${job.id}`}><span>+</span></button>
-      ) : <i key={key} className="matrix-glyph idle" style={{ "--delay": `${-(index % 19)}s`, "--duration": `${12 + (index % 8)}s` } as React.CSSProperties}>·</i>)}
+        <button key={key} className={`matrix-glyph ${statusClass(job)}${fresh.has(job.id) ? " is-new" : ""}`} style={{ "--delay": `${-(index * 0.05).toFixed(2)}s`, "--duration": "3.4s" } as React.CSSProperties} title={`Job ${job.id} · ${job.amount ?? "—"} USDC`} onClick={() => onSelect?.(job.id)} aria-label={`Job ${job.id}`}><span>+</span></button>
+      ) : <i key={key} className="matrix-glyph idle" style={{ "--delay": `${-(index * 0.05).toFixed(2)}s`, "--duration": "3.4s" } as React.CSSProperties}>·</i>)}
     </div>
   );
 }
