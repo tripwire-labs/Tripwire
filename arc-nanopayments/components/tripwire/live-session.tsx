@@ -24,7 +24,12 @@ function visitorIdentity() {
 
 async function readNdjson(response: Response, onEvent:(event:StreamEvent)=>void) {
   if (response.headers.get("content-type")?.includes("application/json")) {
-    const json = await response.json(); onEvent({ type: json.mode === "replay" ? "replay" : "error", ...json }); return;
+    const json = await response.json();
+    // Three distinct terminal shapes, deliberately not collapsed: an already-run seller keeps
+    // the visitor on the marketplace, a capacity limit falls back to replay, anything else is
+    // a real error.
+    const type = json.mode === "already-done" ? "already-done" : json.mode === "replay" ? "replay" : "error";
+    onEvent({ type, ...json }); return;
   }
   if (!response.body) throw new Error("The live stream did not open.");
   const reader=response.body.getReader(); const decoder=new TextDecoder(); let buffer="";
@@ -42,6 +47,8 @@ export function LiveSession() {
   const [completed,setCompleted]=useState<string[]>([]);
   const [ownedJobs,setOwnedJobs]=useState<string[]>([]);
   const [replay,setReplay]=useState(false);
+  // Marketplace-level message for states that must NOT enter the session (already-run seller).
+  const [notice,setNotice]=useState("");
   const [payments,setPayments]=useState<{refund?:string;slash?:string;total?:string;bondBefore?:string;bondAfter?:string}>({});
   const [explanation,setExplanation]=useState("Choose a seller to inspect the collateral they have put at risk before you buy anything.");
   const sessionId=useRef("");
@@ -52,7 +59,27 @@ export function LiveSession() {
 
   function recordEvent(event:StreamEvent){setEvents(prev=>[...prev,event]);if(event.message)setExplanation(event.message);if(event.sessionId)sessionId.current=event.sessionId;if(event.jobId){setOwnedJobs(prev=>{const next=[...new Set([...prev,event.jobId!])];localStorage.setItem("tripwire-jobs",JSON.stringify(next));return next})}if(event.type==="delivery")setPhase("verdict");if(event.type==="replay")startReplay(String(event.reason??"Live capacity is unavailable."));}
 
-  async function chooseSeller(seller:Seller){setSelected(seller);setEvents([]);setPayments({});setReplay(false);setPhase("buy");setBusy(true);setExplanation("First, the seller quotes the job. Nothing moves until the buyer independently verifies those terms.");try{const response=await fetch("/api/live/session",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"start",sellerKey:seller.key,visitorId})});await readNdjson(response,recordEvent)}catch(error){recordEvent({type:"error",message:error instanceof Error?error.message:"The live run stopped."})}finally{setBusy(false)}}
+  async function chooseSeller(seller:Seller){
+    setSelected(seller);setEvents([]);setPayments({});setReplay(false);setNotice("");setPhase("buy");setBusy(true);
+    setExplanation("First, the seller quotes the job. Nothing moves until the buyer independently verifies those terms.");
+    try{
+      const response=await fetch("/api/live/session",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"start",sellerKey:seller.key,visitorId})});
+      // Peek before streaming: an already-run seller must never enter the session at all.
+      if(response.headers.get("content-type")?.includes("application/json")){
+        const json=await response.json() as {mode?:string;sellerName?:string};
+        if(json.mode==="already-done"){
+          setPhase("market");setSelected(null);
+          setNotice(`You've already run ${json.sellerName ?? seller.name} in this tour. Pick a seller you haven't tried, or start a fresh tour to run it again.`);
+          setExplanation("Each seller runs once per tour, so every run spends real testnet USDC on a new job rather than repeating one.");
+          return;
+        }
+        if(json.mode==="replay"){startReplay(String((json as {reason?:string}).reason??"Live capacity is unavailable."));return}
+        recordEvent({type:"error",...json});return;
+      }
+      await readNdjson(response,recordEvent)
+    }catch(error){recordEvent({type:"error",message:error instanceof Error?error.message:"The live run stopped."})}
+    finally{setBusy(false)}
+  }
 
   async function verdict(choice:"accept"|"dispute"){if(!selected)return;setBusy(true);try{if(replay){await replayVerdict(choice);return}const response=await fetch("/api/live/session",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"verdict",sessionId:sessionId.current,visitorId,verdict:choice})});await readNdjson(response,recordEvent);if(choice==="dispute"){const resolution=await fetch("/api/live/resolve",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({sessionId:sessionId.current,visitorId})});const result=await resolution.json();if(!resolution.ok)throw new Error(result.error);recordEvent({type:"resolved",txHash:result.txHash,message:"The arbiter found the seller at fault. Watch the two buyer payments land separately."});const reduced=matchMedia("(prefers-reduced-motion: reduce)").matches;setPayments({refund:result.refund,bondBefore:result.bondBefore,bondAfter:result.bondAfter});if(!reduced)await new Promise(r=>setTimeout(r,500));setPayments(p=>({...p,slash:result.slashedBond}));if(!reduced)await new Promise(r=>setTimeout(r,500));setPayments(p=>({...p,total:(Number(result.refund)+Number(result.slashedBond)).toFixed(6)}));}finishSeller()}catch(error){recordEvent({type:"error",message:error instanceof Error?error.message:"The verdict could not settle."})}finally{setBusy(false)}}
 
@@ -73,7 +100,7 @@ export function LiveSession() {
     localStorage.removeItem("tripwire-jobs");
     const fresh=crypto.randomUUID();
     localStorage.setItem("tripwire-visitor-id",fresh);
-    setVisitorId(fresh);setCompleted([]);setOwnedJobs([]);setReplay(false);
+    setVisitorId(fresh);setCompleted([]);setOwnedJobs([]);setReplay(false);setNotice("");
     setExplanation("Fresh tour. Choose a seller to inspect the collateral they have put at risk before you buy anything.");
     returnToMarket();
   }
@@ -88,8 +115,9 @@ export function LiveSession() {
           <AnimatePresence mode="wait">
             {phase==="market"&&<motion.section key="market" initial={{opacity:0,y:10}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-10}} transition={spring} className="act-panel"><div className="act-title"><div><p className="micro-label">Act I · Choose a seller</p><h1>Who gets your job?</h1><p>Three sellers. Three possible outcomes. Their collateral is real; their behaviour is not revealed in advance.</p></div><div className="completion-markers" aria-label={`${completed.length} of 3 sellers completed`}>{["meridian","halcyon","vantage"].map(key=><i key={key} className={completed.includes(key)?"done":""}>{completed.includes(key)?<Check size={11}/>:null}</i>)}</div></div>
               {sellersQuery.loading?<div className="seller-grid">{[1,2,3].map(x=><div className="seller-card skeleton-card" key={x}/>)}</div>:sellersQuery.error&&!sellers.length?<div className="error-panel"><p>Seller bonds could not be read from Arc.</p><button className="pill pill-secondary" onClick={sellersQuery.retry}>Retry live read</button></div>:<div className="seller-grid">{sellers.map(seller=><SellerCard key={seller.key} seller={seller} completed={completed.includes(seller.key)} onChoose={()=>chooseSeller(seller)}/>)}</div>}
-              {completed.length>0&&completed.length<3&&<p className="lesson-prompt">You&apos;ve completed {completed.length} outcome. Try an unfinished seller—the next failure mode teaches something different.</p>}
-              {completed.length>=3&&<p className="lesson-prompt">You&apos;ve seen all three outcomes: a clean release, a faulty delivery, and a seller who never showed up. <button className="inline-retry" onClick={resetTour}>Start a fresh tour</button></p>}
+              {notice&&<p className="lesson-prompt notice">{notice} <button className="inline-retry" onClick={resetTour}>Start a fresh tour</button></p>}
+              {!notice&&completed.length>0&&completed.length<3&&<p className="lesson-prompt">You&apos;ve completed {completed.length} of 3 outcomes. Try an unfinished seller—the next failure mode teaches something different. <button className="inline-retry" onClick={resetTour}>Or start over</button></p>}
+              {!notice&&completed.length>=3&&<p className="lesson-prompt">You&apos;ve seen all three outcomes: a clean release, a faulty delivery, and a seller who never showed up. <button className="inline-retry" onClick={resetTour}>Start a fresh tour</button></p>}
             </motion.section>}
             {phase==="buy"&&selected&&<motion.section key="buy" initial={{opacity:0,y:10}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-10}} transition={spring} className="act-panel"><ActHeader label="Act II · Buy the service" title={selected.name} copy="You are creating a real escrowed job. Follow the quote, validation, funding, and delivery as each one settles."/><Pipeline events={events} activeStep={activeStep} busy={busy}/></motion.section>}
             {phase==="verdict"&&selected&&<motion.section key="verdict" initial={{opacity:0,y:10}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-10}} transition={spring} className="act-panel"><ActHeader label="Act III · Your verdict" title="Was this worth paying for?" copy="You have the service—or you do not. This decision is the moment a normal push payment does not give you."/>

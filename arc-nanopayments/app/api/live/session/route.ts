@@ -67,7 +67,14 @@ export async function POST(request: NextRequest) {
   const seller = getSellerByKey(body.sellerKey);
   if (!seller) return NextResponse.json({ error: "Unknown seller." }, { status: 400 });
   const limit = claimTour(ip, body.visitorId, seller.key);
-  if (!limit.allowed) return replay(limit.duplicate ? "You already completed this seller in the current tour." : `Live sessions are cooling down for ${limit.retryAfter}s.`);
+  // "Already ran this seller" is NOT a capacity failure, and must not fall through to replay.
+  // Doing so dropped the visitor into a canned replay of Job #1 — a different seller's job —
+  // with inert verdict buttons and no proof links, and no way back. It is a normal, expected
+  // state with an obvious remedy: pick a seller you have not run, or reset the tour.
+  if (!limit.allowed && limit.duplicate) {
+    return NextResponse.json({ mode: "already-done", sellerKey: seller.key, sellerName: seller.name }, { status: 200 });
+  }
+  if (!limit.allowed) return replay(`Live sessions are cooling down for ${limit.retryAfter}s.`);
 
   try {
     const [buyerBalance, sellerGasBalance, bond] = await Promise.all([
