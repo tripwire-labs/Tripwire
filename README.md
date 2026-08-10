@@ -16,6 +16,54 @@ escrow and the seller gets paid in full. If it isn't, the buyer disputes, and �
 — the seller's own posted stake compensates the buyer instead of the buyer just losing the
 money. Two new contracts, `SellerBond.sol` and `JobEscrow.sol`, are the whole mechanism.
 
+## Live on Arc testnet
+
+Everything below is deployed, verified, and in use — no mocks.
+
+| | |
+|---|---|
+| **JobEscrow** | [`0xf8222D7d7c31AAE7745A20a3F97BddB03D6254D7`](https://testnet.arcscan.app/address/0xf8222D7d7c31AAE7745A20a3F97BddB03D6254D7) |
+| **SellerBond** | [`0xed8D1d16150e4a7b146c8A29324537E14bD88988`](https://testnet.arcscan.app/address/0xed8D1d16150e4a7b146c8A29324537E14bD88988) |
+| **Owner / arbiter** | `0xC2Ce96f61a40B54C74f30f1Da73E3b8dcf3e2A2c` |
+| **Identity Registry** | `0x8004A818BFB912233c491871b3d84c89A494BD9e` (ERC-8004) |
+| **Validation Registry** | `0x8004Cb1BF31DAf7788923b405b754f57acEB4272` (ERC-8004) |
+| **USDC** | `0x3600000000000000000000000000000000000000` |
+| Chain | Arc testnet, chain id `5042002` |
+
+Both contracts are source-verified on Arcscan.
+
+### The proof, in one transaction
+
+Job 1 was disputed and resolved against the seller. The buyer received **two** payments:
+
+```
+escrow refund      +0.030000 USDC
+slashed seller bond +0.006000 USDC
+                   ─────────────────
+buyer received      +0.036000 USDC
+
+seller posted bond   0.050000 -> 0.044000 USDC
+```
+
+[Verify the resolution transaction](https://testnet.arcscan.app/tx/0x908063239226925e8fdd2cf61c6279c55c61e623bc701d38e8f98898c105f632)
+
+That is the whole product: the seller paid for failing, out of their own stake.
+
+### Three seller agents, three failure modes
+
+The demo marketplace runs three real ERC-8004 agents, each with its own independently
+slashable bond, so the different outcomes can actually be experienced rather than described.
+
+| Seller | Agent id | Behaviour |
+|---|---|---|
+| Meridian Data | `851889` | Delivers correctly → clean release |
+| Halcyon Compute | `870620` | Returns `200 OK` with unusable content → dispute → slash |
+| Vantage Labs | `870621` | Never delivers → dispute before the deadline |
+
+All three are owned by one wallet, which the ERC-8004 registry permits; `SellerBond` keys
+balances on `agentId`, so slashing one does not touch the others.
+
+
 ## The gap this fills
 
 - **x402's own spec** lists escrow-style conditional payment as explicit future work — it
@@ -107,18 +155,54 @@ The contracts live in [`contracts/src/`](contracts/src/) — a Foundry project; 
   into it is wrapped so a flaky registry can never block a payment from settling.
 - **Circle Paymaster isn't available on Arc.** Arc's native gas token is USDC itself, so the
   underlying "agents only hold USDC" requirement is already satisfied without it.
+- **The dust-job defence prices the attack rather than eliminating it.** `minJobAmount` makes
+  burning a seller's validation hash cost the attacker a real amount, recoverable only by
+  convincing the arbiter or by waiting out `claimTimeout` — which pays the seller. Griefing
+  funds the victim. That is a strong economic deterrent, not a cryptographic guarantee.
+- **An abandoned dispute freezes the seller's bond, not just that job's escrow.** A `Disputed`
+  job has no timeout rescue, and its reserved bond is never released either — so one
+  walked-away dispute permanently reduces the seller's free bond across all future jobs.
+- **The 402 rate limiter is in-process.** It resets on restart and does not coordinate across
+  instances. Sufficient for a single-node deployment, not for production.
+- **The live session lends you a funded buyer agent.** A visitor has no Arc testnet USDC, so
+  the browser session signs with a server-held buyer identity. That is the only simulated part
+  — the escrow, bond, slash and attestations are all real and on-chain.
+- **Neither contract can rotate `owner`.** There is no `transferOwnership`; if the deployer key
+  is lost, the risk parameters and the registry kill switch go with it.
 - **Circle Contracts (the no-code deploy platform) isn't used** — this project deploys via
   Foundry instead, a deliberate choice for a reproducible local dev/test loop while learning
   Solidity.
 
 ## Status
 
-**Phase 0 complete; contracts in progress.** The baseline agent-to-agent x402 payment flow
-is confirmed working end-to-end on Arc testnet (including two upstream fixes — see the
-commit history), buyer and seller agents are registered on the ERC-8004 Identity Registry,
-and `SellerBond.sol` is being implemented incrementally on its own branch. Development
-follows a branch-per-component workflow: each component is built on its own branch and
-merged only when its tests are green.
+**Complete and running.** Contracts deployed and verified on Arc testnet, the backend creates
+real jobs through the forked agent flow, and both demo runs — clean release and disputed
+slash — have been executed end to end on-chain.
+
+- **112 tests green**: 108 Foundry unit tests plus a 4-test fork suite that runs against the
+  live ERC-8004 registries.
+- **Coverage** includes bond deposit, the withdrawal timelock, slash-only-by-escrow, job
+  creation with the bond-ratio check, release, dispute, timeout auto-release, and regression
+  tests for every issue found in the pre-submission audit.
+- **A browser session** at `/live` lets anyone run a real job against the deployed contracts —
+  choosing a seller, funding escrow, and deciding the outcome — without a wallet of their own.
+
+### Security audit
+
+A full adversarial pass over the contracts and backend before submission found and fixed:
+
+- **A near-free denial of service.** Validation request hashes are public on the registry and
+  `createJob` consumed one permanently, so anyone could burn a seller's hash with a 1-unit job
+  whose bond rounded to zero — locking none of their own capital and permanently blocking the
+  real buyer. Fixed with `minJobAmount` plus rejection of jobs whose collateral rounds to zero.
+- **An unauthenticated gas drain.** Returning a `402` registers an on-chain validation request
+  paid for in USDC by the seller, and the endpoint had no rate limiting, so a plain curl loop
+  could drain that wallet. Now rate-limited per IP with a global ceiling.
+- **Unlimited redelivery.** A job stays `Active` until released, so the same job id and
+  signature could be replayed for unlimited copies of paid content. Now one delivery per job,
+  enforced by a database primary key.
+- **A requestHash reuse gap** around the registry kill switch, and **an unbound redemption
+  signature** (no chain or contract in the signed message).
 
 ## Repo layout
 
@@ -126,9 +210,31 @@ merged only when its tests are green.
 README.md            — this file
 LICENSE              — Apache-2.0 (inherits from the included Circle sample code)
 .github/workflows/   — CI: forge build/test + lint + typecheck, on every branch
-arc-nanopayments/    — seller app (Next.js + x402 + Supabase) and buyer agent,
-                       based on circlefin/arc-nanopayments
-contracts/           — Foundry project: SellerBond.sol + JobEscrow.sol (in progress)
+arc-nanopayments/    — Next.js app: the seller's x402 endpoints, the buyer agent,
+                       and the hero + live session UI. Based on circlefin/arc-nanopayments
+  app/live/          — the guided browser session
+  app/api/live/      — session runner, chain reads, arbiter resolution
+  components/tripwire/ — UI
+  lib/               — jobEscrow, x402 middleware, validation registry, rate limiting
+contracts/           — Foundry project: SellerBond.sol + JobEscrow.sol
+  script/demo/       — post-bond, status, and arbiter resolve-dispute scripts
+```
+
+## Run it yourself
+
+```bash
+# contracts
+cd contracts && forge test                       # 108 unit tests
+forge test --match-contract ArcForkIntegration \
+  --fork-url https://rpc.testnet.arc.network     # 4 tests against the live registries
+
+# app  (needs a local Supabase: npx supabase start)
+cd arc-nanopayments && npm install && npm run dev
+
+# a real job end to end, from the terminal
+npm run agent                    # clean release
+npm run agent -- --dispute       # dispute, then resolve it:
+cd ../contracts/script/demo && ./resolve-dispute.sh <jobId> --seller-at-fault
 ```
 
 ## Reference links
