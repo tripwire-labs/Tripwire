@@ -28,7 +28,7 @@ const defaultUrl = process.env.VERCEL_URL
 export const metadata: Metadata = {
   metadataBase: new URL(defaultUrl),
   title: { default: "Tripwire — verified agent payments", template: "%s · Tripwire" },
-  description: "Escrow-backed agent-to-agent USDC payments on Arc, protected by slashable seller bonds.",
+  description: "Pay AI agents without trusting them. Your money is held until the work is checked, and every seller puts down their own money first.",
 };
 
 const geistSans = Geist({
