@@ -18,6 +18,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { withGateway } from "@/lib/x402";
+import { getSellerForEndpoint } from "@/lib/live/config";
 
 const clues = [
   "The treasure is hidden where the sun meets the ocean — latitude 34.0195° N.",
@@ -38,4 +39,6 @@ const handler = async (_req: NextRequest) => {
   });
 };
 
-export const GET = withGateway(handler, "$0.03", "/api/premium/agent-task");
+const seller = getSellerForEndpoint("/api/premium/agent-task");
+if (!seller) throw new Error("Agent-task seller is not configured");
+export const GET = withGateway(handler, seller.price, seller.endpoint, { sellerAgentId: seller.agentId, archetype: seller.archetype });

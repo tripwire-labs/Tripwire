@@ -17,9 +17,7 @@
  */
 
 import type { Metadata } from "next";
-import { Geist } from "next/font/google";
-import { TooltipProvider } from "@/components/ui/tooltip";
-import { Toaster } from "sonner";
+import { Geist, Geist_Mono, Instrument_Serif } from "next/font/google";
 import "./globals.css";
 
 const defaultUrl = process.env.VERCEL_URL
@@ -28,8 +26,8 @@ const defaultUrl = process.env.VERCEL_URL
 
 export const metadata: Metadata = {
   metadataBase: new URL(defaultUrl),
-  title: "Arc Nanopayments Demo",
-  description: "Arc nanopayments demo application",
+  title: { default: "Tripwire — verified agent payments", template: "%s · Tripwire" },
+  description: "Escrow-backed agent-to-agent USDC payments on Arc, protected by slashable seller bonds.",
 };
 
 const geistSans = Geist({
@@ -38,6 +36,9 @@ const geistSans = Geist({
   subsets: ["latin"],
 });
 
+const geistMono = Geist_Mono({ variable: "--font-geist-mono", display: "swap", subsets: ["latin"] });
+const instrumentSerif = Instrument_Serif({ variable: "--font-instrument-serif", display: "swap", subsets: ["latin"], weight: "400" });
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -45,10 +46,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${geistSans.className} antialiased`}>
-        <TooltipProvider>{children}</TooltipProvider>
-        <Toaster richColors position="bottom-right" />
-      </body>
+      <body className={`${geistSans.variable} ${geistMono.variable} ${instrumentSerif.variable}`}>{children}</body>
     </html>
   );
 }

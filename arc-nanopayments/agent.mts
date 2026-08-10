@@ -19,7 +19,7 @@ const ENDPOINTS = {
     path: "/api/premium/compute",
     method: "POST" as const,
     body: { text: "Hello from the Tripwire escrow demo!" },
-    expectedPrice: "$0.0003",
+    expectedPrice: "$0.003",
   },
   "agent-task": { path: "/api/premium/agent-task", method: "GET" as const, expectedPrice: "$0.03" },
 };

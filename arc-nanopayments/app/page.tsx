@@ -1,84 +1,74 @@
-/**
- * Copyright 2026 Circle Internet Group, Inc.  All rights reserved.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- * SPDX-License-Identifier: Apache-2.0
- */
+import Link from "next/link";
+import { ArrowRight, ExternalLink } from "lucide-react";
+import { Nav } from "@/components/tripwire/nav";
+import { Footer } from "@/components/tripwire/footer";
+import { SettlementMatrix } from "@/components/tripwire/settlement-matrix";
+import { MechanismDiagram } from "@/components/tripwire/mechanism-diagram";
+import { LifecycleCards } from "@/components/tripwire/home-live";
 
-"use client";
+const ESCROW = process.env.JOB_ESCROW_ADDRESS!;
+const explorer = `https://testnet.arcscan.app/address/${ESCROW}`;
 
-import { useState } from "react";
-import { login } from "./actions";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-
-export default function SignIn() {
-  const [error, setError] = useState<string | null>(null);
-  const [pending, setPending] = useState(false);
-
-  async function handleSubmit(formData: FormData) {
-    setPending(true);
-    setError(null);
-    const result = await login(formData);
-    if (result?.error) {
-      setError(result.error);
-      setPending(false);
-    }
-  }
-
+export default function Home() {
   return (
-    <main className="min-h-screen flex items-center justify-center p-4">
-      <Card className="w-full max-w-sm">
-        <CardHeader>
-          <CardTitle className="text-2xl">Sign in</CardTitle>
-          <p className="text-sm text-muted-foreground">
-            Enter your credentials to access the dashboard
-          </p>
-        </CardHeader>
-        <CardContent>
-          <form action={handleSubmit} className="flex flex-col gap-4">
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="email">Email</Label>
-              <Input
-                id="email"
-                name="email"
-                type="email"
-                placeholder="Email"
-                required
-              />
+    <>
+      <Nav escrowAddress={ESCROW} />
+      <main>
+        <section className="hero-section shell">
+          <div className="hero-grid-bg" aria-hidden="true" />
+          <a className="signal-pill" href={explorer} target="_blank" rel="noopener noreferrer"><i /> Live on Arc testnet <ExternalLink size={12}/></a>
+          <div className="hero-composition">
+            <h1 className="hero-line hero-line-a">Payment that waits</h1>
+            <div className="hero-matrix" aria-hidden="true"><SettlementMatrix compact /></div>
+            <h1 className="hero-line hero-line-b">for proof.</h1>
+          </div>
+          <p className="hero-copy"><strong>Tripwire escrows agent-to-agent USDC on Arc and releases it only on verified delivery</strong> — backed by a seller bond that gets slashed when delivery fails.</p>
+          <div className="hero-actions"><Link className="pill pill-primary" href="/live">Watch a live job settle <ArrowRight size={14}/></Link><a className="pill pill-secondary" href={explorer} target="_blank" rel="noopener noreferrer">Read the contracts <ExternalLink size={13}/></a></div>
+          <p className="hero-proof micro-label">REAL CONTRACTS · REAL TESTNET USDC · ONE BORROWED BUYER IDENTITY</p>
+        </section>
+
+        <section className="section shell" id="gap">
+          <div className="section-heading"><p className="micro-label">01 / The gap</p><h2>The payment succeeded. <span>Did the work?</span></h2><p>Agent payment rails can prove that money moved. They cannot prove the thing purchased was worth paying for.</p></div>
+          <div className="marketing-grid">
+            <article><span className="card-index">01</span><h3>x402 pushes are irreversible.</h3><p>Conditional escrow transfers are named as future work in the x402 specification, not part of today&apos;s push-payment flow.</p></article>
+            <article><span className="card-index">02</span><h3>Circle disclaims outcomes.</h3><p>Agent Stack&apos;s terms do not guarantee the performance, availability, or outcome of third-party agent transactions.</p></article>
+            <article><span className="card-index">03</span><h3>So nothing covers the buyer.</h3><p>If the endpoint returns garbage—or nothing—the payment has already gone. Transport success is not delivery quality.</p></article>
+          </div>
+        </section>
+
+        <section className="section shell" id="lifecycle">
+          <div className="section-heading"><p className="micro-label">02 / The lifecycle</p><h2>Bond. Escrow. <span>Verified settlement.</span></h2><p>Every live value below is read from the deployed contracts.</p></div>
+          <LifecycleCards />
+        </section>
+
+        <section className="section shell" id="mechanism">
+          <div className="section-heading"><p className="micro-label">03 / The mechanism</p><h2>Money moves on an outcome, <span>not a request.</span></h2></div>
+          <MechanismDiagram />
+        </section>
+
+        <section className="section shell">
+          <div className="slash-panel">
+            <div><p className="micro-label alarm-text">Recorded on Arc · Job 1</p><h2>The seller failed. The buyer was paid twice.</h2><p className="muted">Arbiter ruled the seller at fault. The bond is the tripwire.</p></div>
+            <div className="slash-ledger">
+              <div><span>Escrow refund</span><b>+0.030000 USDC</b></div>
+              <div><span>Slashed seller bond</span><b>+0.006000 USDC</b></div>
+              <div className="total"><span>Buyer received</span><b>0.036000 USDC</b></div>
+              <div><span>Seller posted bond</span><b>0.050000 → 0.044000</b></div>
             </div>
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="password">Password</Label>
-              <Input
-                id="password"
-                name="password"
-                type="password"
-                placeholder="Password"
-                required
-              />
-            </div>
-            {error && (
-              <p className="text-sm text-destructive">{error}</p>
-            )}
-            <Button type="submit" disabled={pending} className="w-full">
-              {pending ? "Signing in..." : "Sign in"}
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
-    </main>
+            <a className="text-link" href="https://testnet.arcscan.app/tx/0x908063239226925e8fdd2cf61c6279c55c61e623bc701d38e8f98898c105f632" target="_blank" rel="noopener noreferrer">Verify the resolution transaction <ExternalLink size={13}/></a>
+          </div>
+        </section>
+
+        <section className="section shell built-on">
+          <div className="section-heading"><p className="micro-label">04 / Built on</p><h2>Extending the rails <span>agents already use.</span></h2></div>
+          <div className="built-row">
+            <div><b>Arc</b><span>USDC settlement chain</span></div><div><b>Circle x402</b><span>Discovery, pricing, delivery</span></div><div><b>ERC-8004</b><span>Identity and attestations</span></div><div><b>Agent Wallets</b><span>Custody upstream of escrow</span></div>
+          </div>
+        </section>
+
+        <section className="section final-cta shell"><p className="micro-label">The buyer&apos;s seat is ready</p><h2>Choose a seller. See what arrives. <span>Decide who gets paid.</span></h2><Link className="pill pill-primary" href="/live">Start the live session <ArrowRight size={14}/></Link></section>
+      </main>
+      <Footer />
+    </>
   );
 }

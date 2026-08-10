@@ -18,6 +18,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { withGateway } from "@/lib/x402";
+import { getSellerForEndpoint } from "@/lib/live/config";
 
 const handler = async (_req: NextRequest) => {
   return NextResponse.json({
@@ -32,4 +33,6 @@ const handler = async (_req: NextRequest) => {
   });
 };
 
-export const GET = withGateway(handler, "$0.01", "/api/premium/dataset");
+const seller = getSellerForEndpoint("/api/premium/dataset");
+if (!seller) throw new Error("Dataset seller is not configured");
+export const GET = withGateway(handler, seller.price, seller.endpoint, { sellerAgentId: seller.agentId, archetype: seller.archetype });

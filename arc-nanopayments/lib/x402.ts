@@ -23,6 +23,7 @@ import { keccak256, toBytes } from "viem";
 import { getJob, JobStatus, recoverJobIdSigner } from "./jobEscrow";
 import { checkRateLimit, clientIpFrom } from "./rateLimit";
 import { registerValidationRequest } from "./validationRegistry";
+import type { SellerArchetype } from "./live/config";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -32,11 +33,6 @@ const supabase = createClient(
 // Fails loudly at module load rather than silently defaulting to 0n — a misconfigured
 // SELLER_AGENT_ID should be an obvious startup error, not a confusing "wrong seller"
 // rejection on every request once real jobs start hitting it.
-if (!process.env.SELLER_AGENT_ID) {
-  throw new Error("SELLER_AGENT_ID not configured");
-}
-const SELLER_AGENT_ID = BigInt(process.env.SELLER_AGENT_ID);
-
 const HEX_ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
 const rawJobEscrowAddress = process.env.JOB_ESCROW_ADDRESS;
 if (rawJobEscrowAddress && !HEX_ADDRESS_RE.test(rawJobEscrowAddress)) {
@@ -57,8 +53,8 @@ function priceToAtomicUnits(price: string): bigint {
  * (endpoint-binding is deliberately not enforced yet); it's purely so this hash reads as
  * something in logs instead of opaque bytes.
  */
-function generateRequestHash(endpoint: string): `0x${string}` {
-  return keccak256(toBytes(`${SELLER_AGENT_ID}-${endpoint}-${randomUUID()}`));
+function generateRequestHash(sellerAgentId: bigint, endpoint: string): `0x${string}` {
+  return keccak256(toBytes(`${sellerAgentId}-${endpoint}-${randomUUID()}`));
 }
 
 /**
@@ -83,8 +79,10 @@ export function withGateway(
   handler: (req: NextRequest) => Promise<NextResponse>,
   price: string,
   endpoint: string,
+  options: { sellerAgentId: bigint; archetype: SellerArchetype },
 ) {
   const expectedAmount = priceToAtomicUnits(price);
+  const { sellerAgentId, archetype } = options;
 
   return async (req: NextRequest) => {
     if (!JOB_ESCROW_ADDRESS) {
@@ -112,11 +110,12 @@ export function withGateway(
 
       console.log(`[escrow] 402 Job Required: ${endpoint}`);
 
-      const requestHash = generateRequestHash(endpoint);
+      const requestHash = generateRequestHash(sellerAgentId, endpoint);
+      let validationTxHash: `0x${string}`;
       try {
-        await registerValidationRequest({
+        validationTxHash = await registerValidationRequest({
           validatorAddress: JOB_ESCROW_ADDRESS,
-          agentId: SELLER_AGENT_ID,
+          agentId: sellerAgentId,
           requestURI: endpoint,
           requestHash,
         });
@@ -131,9 +130,10 @@ export function withGateway(
       return NextResponse.json(
         {
           price,
-          sellerAgentId: SELLER_AGENT_ID.toString(),
+          sellerAgentId: sellerAgentId.toString(),
           requestHash,
           jobEscrowAddress: JOB_ESCROW_ADDRESS,
+          validationTxHash,
         },
         { status: 402 },
       );
@@ -185,7 +185,7 @@ export function withGateway(
       return NextResponse.json({ error: `x-job-signature was not signed by job ${jobId}'s buyer` }, { status: 401 });
     }
 
-    if (job.sellerAgentId !== SELLER_AGENT_ID) {
+    if (job.sellerAgentId !== sellerAgentId) {
       return NextResponse.json({ error: `Job ${jobId} was not created for this seller` }, { status: 400 });
     }
     // Known limitation, deliberately deferred (see plans/08-disclosures.md): this only
@@ -204,6 +204,15 @@ export function withGateway(
       );
     }
 
+    // The absent archetype represents a seller that never delivers. It must fail before the
+    // delivery slot is claimed, otherwise Supabase would falsely say content arrived.
+    if (archetype === "absent") {
+      return NextResponse.json(
+        { error: "The seller did not return a delivery before the request timed out." },
+        { status: 504 },
+      );
+    }
+
     // One delivery per job, enforced by the primary key on job_deliveries rather than by a
     // read-then-write check here — two concurrent requests for the same jobId would both
     // pass a read-then-write check, and only the database can serialize them.
@@ -215,15 +224,19 @@ export function withGateway(
     // is that a handler which throws afterwards burns the delivery; that is the right way
     // round for paid content, and these handlers are pure local computation with no
     // external calls to fail on.
+    // Scope the delivery key to the escrow deployment. Job ids restart at zero after a
+    // redeploy, and historical Supabase rows are intentionally retained; a bare job id
+    // would let an old deployment's row block a current job with a false 409.
+    const deliveryKey = `${JOB_ESCROW_ADDRESS.toLowerCase()}:${jobId}`;
     const { error: deliveryError } = await supabase.from("job_deliveries").insert({
-      job_id: jobId.toString(),
+      job_id: deliveryKey,
       endpoint,
       buyer: job.buyer,
     });
     if (deliveryError) {
       // 23505 is Postgres' unique_violation — the job was already delivered.
       if (deliveryError.code === "23505") {
-        console.warn(`[escrow] replay rejected: job ${jobId} was already delivered`);
+        console.warn(`[escrow] replay rejected: job ${deliveryKey} was already delivered`);
         return NextResponse.json(
           { error: `Job ${jobId} has already been delivered — each job pays for one delivery.` },
           { status: 409 },
@@ -257,6 +270,14 @@ export function withGateway(
     }
 
     console.log(`[escrow] Job ${jobId} verified Active: ${endpoint} — ${price} from ${job.buyer}`);
+
+    if (archetype === "faulty") {
+      return NextResponse.json({
+        result: null,
+        records: [{ id: "?", value: null }],
+        warning: "payload truncated",
+      });
+    }
 
     return handler(req);
   };

@@ -1,14 +1,101 @@
 import { createPublicClient, http, recoverMessageAddress, type WalletClient } from "viem";
 import { arcTestnet } from "viem/chains";
 
-const ARC_TESTNET_RPC = "https://rpc.testnet.arc.network";
+export const ARC_TESTNET_RPC = "https://rpc.testnet.arc.network";
 
 // Minimal ABI fragment — just the calls either side of Tripwire actually makes (seller
 // reads `jobs`; buyer writes `createJob`/`release`/`dispute`). Copied from the real
 // compiled artifact (contracts/out/JobEscrow.sol/JobEscrow.json, gitignored so it can't
 // be imported directly), not hand-written from memory — same discipline the Solidity
 // side uses for its own minimal interfaces (ISellerBond, IIdentityRegistry).
-const JOB_ESCROW_ABI = [
+export const JOB_ESCROW_ABI = [
+  {
+    type: "event",
+    name: "JobCreated",
+    inputs: [
+      { name: "jobId", type: "uint256", indexed: true },
+      { name: "buyer", type: "address", indexed: true },
+      { name: "sellerAgentId", type: "uint256", indexed: true },
+      { name: "amount", type: "uint256", indexed: false },
+      { name: "reservedBond", type: "uint256", indexed: false },
+      { name: "completionDeadline", type: "uint64", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "JobReleased",
+    inputs: [{ name: "jobId", type: "uint256", indexed: true }],
+  },
+  {
+    type: "event",
+    name: "JobDisputed",
+    inputs: [
+      { name: "jobId", type: "uint256", indexed: true },
+      { name: "evidenceHash", type: "bytes32", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "JobResolved",
+    inputs: [
+      { name: "jobId", type: "uint256", indexed: true },
+      { name: "sellerAtFault", type: "bool", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "JobTimedOut",
+    inputs: [{ name: "jobId", type: "uint256", indexed: true }],
+  },
+  {
+    type: "function",
+    name: "nextJobId",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "minBondRatioBps",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "minJobAmount",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "responseWindow",
+    inputs: [],
+    outputs: [{ name: "", type: "uint64" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "validationRegistryEnabled",
+    inputs: [],
+    outputs: [{ name: "", type: "bool" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "sellerBond",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "ARBITER",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+    stateMutability: "view",
+  },
   {
     type: "function",
     name: "jobs",
@@ -52,6 +139,16 @@ const JOB_ESCROW_ABI = [
     inputs: [
       { name: "jobId", type: "uint256" },
       { name: "evidenceHash", type: "bytes32" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "resolveDispute",
+    inputs: [
+      { name: "jobId", type: "uint256" },
+      { name: "sellerAtFault", type: "bool" },
     ],
     outputs: [],
     stateMutability: "nonpayable",
@@ -185,6 +282,25 @@ export async function disputeJob(
     abi: JOB_ESCROW_ABI,
     functionName: "dispute",
     args: [jobId, evidenceHash],
+    account: walletClient.account,
+  });
+  const txHash = await walletClient.writeContract(request);
+  await publicClient.waitForTransactionReceipt({ hash: txHash });
+  return txHash;
+}
+
+/** Arbiter-only dispute resolution. Kept here so the ABI has one source of truth. */
+export async function resolveDisputeJob(
+  walletClient: WalletClient,
+  jobEscrowAddress: `0x${string}`,
+  jobId: bigint,
+  sellerAtFault: boolean,
+): Promise<`0x${string}`> {
+  const { request } = await publicClient.simulateContract({
+    address: jobEscrowAddress,
+    abi: JOB_ESCROW_ABI,
+    functionName: "resolveDispute",
+    args: [jobId, sellerAtFault],
     account: walletClient.account,
   });
   const txHash = await walletClient.writeContract(request);
