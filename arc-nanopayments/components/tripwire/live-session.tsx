@@ -51,6 +51,8 @@ export function LiveSession() {
   const [replay,setReplay]=useState(false);
   // Marketplace-level message for states that must NOT enter the session (already-run seller).
   const [notice,setNotice]=useState("");
+  // Set when the quote has arrived and the visitor has not yet authorised the spend.
+  const [pendingQuote,setPendingQuote]=useState<{token:string;price:string}|null>(null);
   const [payments,setPayments]=useState<{refund?:string;slash?:string;total?:string;bondBefore?:string;bondAfter?:string}>({});
   const [explanation,setExplanation]=useState("Choose a seller to inspect the collateral they have put at risk before you buy anything.");
   const sessionId=useRef("");
@@ -72,10 +74,10 @@ export function LiveSession() {
   const sellers=sellersQuery.data?.sellers??[];
   const latest=events.at(-1);
 
-  function recordEvent(event:StreamEvent){setEvents(prev=>[...prev,event]);if(event.message)setExplanation(event.message);if(event.sessionId)sessionId.current=event.sessionId;if(event.jobId){setOwnedJobs(prev=>{const next=[...new Set([...prev,event.jobId!])];localStorage.setItem("tripwire-jobs",JSON.stringify(next));return next})}if(event.type==="delivery")setPhase("verdict");if(event.type==="replay")startReplay(String(event.reason??"Live capacity is unavailable."));}
+  function recordEvent(event:StreamEvent){setEvents(prev=>[...prev,event]);if(event.message)setExplanation(event.message);if(event.sessionId)sessionId.current=event.sessionId;if(event.jobId){setOwnedJobs(prev=>{const next=[...new Set([...prev,event.jobId!])];localStorage.setItem("tripwire-jobs",JSON.stringify(next));return next})}if(event.type==="awaiting-funding")setPendingQuote({token:String(event.quoteToken),price:String(event.price)});if(event.type==="funded")setPendingQuote(null);if(event.type==="delivery")setPhase("verdict");if(event.type==="replay")startReplay(String(event.reason??"Live capacity is unavailable."));}
 
   async function chooseSeller(seller:Seller){
-    setSelected(seller);setEvents([]);setPayments({});setReplay(false);setNotice("");setPhase("buy");setBusy(true);
+    setSelected(seller);setEvents([]);setPayments({});setReplay(false);setNotice("");setPendingQuote(null);setPhase("buy");setBusy(true);
     setExplanation("First, the seller quotes the job. Nothing moves until the buyer independently verifies those terms.");
     try{
       const response=await fetch("/api/live/session",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"start",sellerKey:seller.key,visitorId})});
@@ -100,6 +102,26 @@ export function LiveSession() {
 
   function startReplay(reason:string){setReplay(true);setExplanation(`${reason} This is a clearly labelled replay of real Job #1.`);setEvents([{type:"replay",message:reason},{type:"quote",message:"Historical 402 quote loaded: 0.030000 USDC, no payment yet."},{type:"validation",message:"Job #1 carries its real ERC-8004 validation request hash in the evidence stream below."},{type:"funded",jobId:"1",amount:"0.030000",message:"Job #1 escrowed 0.030000 USDC and reserved 0.006000 USDC."},{type:"delivery",archetype:selected?.archetype??"faulty",payload:{result:null,records:[]},message:"Replay delivery loaded. The bytes arrived, but the content was not acceptable."}]);setPhase("verdict")}
   async function replayVerdict(choice:"accept"|"dispute"){if(choice==="accept"){recordEvent({type:"released",message:"Replay branch: accepting would have paid the seller and left the buyer with no recourse."})}else{recordEvent({type:"disputed",message:"Replay: Job #1's evidence hash was written on-chain."});recordEvent({type:"resolved",txHash:"0x908063239226925e8fdd2cf61c6279c55c61e623bc701d38e8f98898c105f632",message:"The historical arbiter transaction found the seller at fault."});setPayments({refund:"0.030000",bondBefore:"0.050000",bondAfter:"0.044000"});await new Promise(r=>setTimeout(r,500));setPayments(p=>({...p,slash:"0.006000"}));await new Promise(r=>setTimeout(r,500));setPayments(p=>({...p,total:"0.036000"}))}finishSeller()}
+
+  /**
+   * The visitor authorising the spend. Deliberately a separate call and a separate click:
+   * Act II used to run straight through quote -> approve -> createJob, so the page moved the
+   * visitor's money before they had a chance to agree to it.
+   */
+  async function fundEscrow(){
+    if(!pendingQuote)return;
+    setBusy(true);
+    try{
+      const response=await fetch("/api/live/session",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"fund",quoteToken:pendingQuote.token,visitorId})});
+      if(response.headers.get("content-type")?.includes("application/json")){
+        const json=await response.json();
+        recordEvent({type:"error",...json});return;
+      }
+      await readNdjson(response,recordEvent);
+    }catch(error){recordEvent({type:"error",message:error instanceof Error?error.message:"Funding failed."})}
+    finally{setBusy(false)}
+  }
+
   function finishSeller(){if(!selected)return;setPhase("outcome");setCompleted(prev=>{const next=[...new Set([...prev,selected.key])];localStorage.setItem("tripwire-completed",JSON.stringify(next));return next})}
   function returnToMarket(){setPhase("market");setSelected(null);setEvents([]);setPayments({});sellersQuery.retry()}
 
@@ -135,7 +157,9 @@ export function LiveSession() {
               {!notice&&completed.length>0&&completed.length<3&&<p className="lesson-prompt">You&apos;ve completed {completed.length} of 3 outcomes. Try an unfinished seller—the next failure mode teaches something different. <button className="inline-retry" onClick={resetTour}>Or start over</button></p>}
               {!notice&&completed.length>=3&&<p className="lesson-prompt">You&apos;ve seen all three outcomes: a clean release, a faulty delivery, and a seller who never showed up. <button className="inline-retry" onClick={resetTour}>Start a fresh tour</button></p>}
             </motion.section>}
-            {phase==="buy"&&selected&&<motion.section key="buy" initial={{opacity:0,y:10}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-10}} transition={spring} className="act-panel"><ActHeader label="Act II · Buy the service" title={selected.name} copy="You are creating a real escrowed job. Follow the quote, validation, funding, and delivery as each one settles."/><Pipeline events={events} activeStep={activeStep} busy={busy}/></motion.section>}
+            {phase==="buy"&&selected&&<motion.section key="buy" initial={{opacity:0,y:10}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-10}} transition={spring} className="act-panel"><ActHeader label="Act II · Buy the service" title={selected.name} copy="You are creating a real escrowed job. Follow the quote, validation, funding, and delivery as each one settles."/><Pipeline events={events} activeStep={activeStep} busy={busy}/>
+              {pendingQuote&&<div className="fund-gate"><div><p className="micro-label">Your decision</p><p>The seller wants <b>{pendingQuote.price} USDC</b>. Nothing has left the buyer wallet yet — funding the escrow is the first step that moves money.</p></div><button className="pill pill-primary" disabled={busy} onClick={fundEscrow}>{busy?"Funding…":`Fund escrow · ${pendingQuote.price}`}</button></div>}
+            </motion.section>}
             {phase==="verdict"&&selected&&<motion.section key="verdict" initial={{opacity:0,y:10}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-10}} transition={spring} className="act-panel"><ActHeader label="Act III · Your verdict" title="Was this worth paying for?" copy="You have the service—or you do not. This decision is the moment a normal push payment does not give you."/>
               <DeliveryPayload event={events.findLast(e=>e.type==="delivery")} seller={selected}/>
               <div className="verdict-actions"><button disabled={busy} onClick={()=>verdict("accept")} className="verdict-button"><span>Accept delivery</span><small>release() · seller paid</small></button><button disabled={busy} onClick={()=>verdict("dispute")} className="verdict-button"><span>Dispute it</span><small>evidence hash · arbiter ruling</small></button></div>
@@ -210,7 +234,61 @@ function ProofLedger({ events }: { events: StreamEvent[] }) {
   );
 }
 function Pipeline({events,activeStep,busy}:{events:StreamEvent[];activeStep:number;busy:boolean}){const steps=[{title:"Ask for the service",event:"quote",copy:"402 handshake · nothing paid"},{title:"Register validation",event:"validation",copy:"ERC-8004 request on-chain"},{title:"Fund escrow",event:"funded",copy:"approve + createJob"},{title:"Delivery",event:"delivery",copy:"inspect what actually arrived"}];return <div className="pipeline" aria-live="polite">{steps.map((step,index)=>{const event=events.find(e=>e.type===step.event);const state=event?"done":activeStep===index+1||busy&&index===activeStep?"active":"pending";return <motion.article layout key={step.event} className={state} transition={spring}><span className="step-marker">{event?<Check size={13}/>:String(index+1).padStart(2,"0")}</span><div><h3>{step.title}</h3><p>{event?.message??step.copy}</p>{event?.txHash&&<a href={explorerTx(event.txHash)} target="_blank" rel="noopener noreferrer">{middle(event.txHash)} <ExternalLink size={11}/></a>}{step.event==="funded"&&event&&<div className="transfer-readout"><span>Buyer: {String(event.buyerBefore)} → {String(event.buyerAfter)} USDC</span><span>Reserved bond: {String(event.bondReservedBefore)} → {String(event.bondReservedAfter)} USDC</span></div>}</div></motion.article>})}</div>}
-function DeliveryPayload({event,seller}:{event?:StreamEvent;seller:Seller}){return <div className={`delivery-payload ${seller.archetype}`}><div className="response-line"><span className="micro-label">HTTP response</span><b>{String(event?.status??(seller.archetype==="absent"?504:200))} {seller.archetype==="absent"?"NO DELIVERY":"OK"}</b></div>{seller.archetype==="absent"?<div className="absent-state"><Clock3 size={20}/><p>No content arrived. Your principal and the seller&apos;s reserved bond are still locked.</p></div>:<pre>{JSON.stringify(event?.payload??{},null,2)}</pre>}{seller.archetype==="faulty"&&<p className="payload-warning"><TriangleAlert size={14}/> The request succeeded. Look at what actually came back: null output, a placeholder id, and no usable records.</p>}</div>}
+/**
+ * Renders what the seller actually returned.
+ *
+ * A raw JSON dump made the visitor do the work of spotting what was wrong with it, which is
+ * precisely the judgement the page is asking them to make. Fields are laid out as labelled
+ * rows and each empty, null or placeholder value is called out inline, so "the request
+ * succeeded but the content is worthless" is legible at a glance rather than inferred.
+ */
+function faultOf(value: unknown): string | null {
+  if (value === null || value === undefined) return "no value returned";
+  if (Array.isArray(value) && value.length === 0) return "empty list";
+  if (typeof value === "string" && value.trim() === "") return "blank";
+  if (typeof value === "string" && /^[?\-_.]+$/.test(value.trim())) return "placeholder";
+  return null;
+}
+
+function preview(value: unknown): string {
+  if (value === null || value === undefined) return "null";
+  if (Array.isArray(value)) return value.length ? `${value.length} item${value.length === 1 ? "" : "s"}` : "[ ]";
+  if (typeof value === "object") return `{ ${Object.keys(value as object).length} fields }`;
+  return String(value);
+}
+
+function DeliveryPayload({event,seller}:{event?:StreamEvent;seller:Seller}){
+  const payload = (event?.payload ?? null) as Record<string, unknown> | null;
+  const entries = payload && typeof payload === "object" ? Object.entries(payload) : [];
+  const faults = entries.filter(([, v]) => faultOf(v) !== null).length;
+
+  return <div className={`delivery-payload ${seller.archetype}`}>
+    <div className="response-line">
+      <span className="micro-label">HTTP response</span>
+      <b>{String(event?.status??(seller.archetype==="absent"?504:200))} {seller.archetype==="absent"?"NO DELIVERY":"OK"}</b>
+    </div>
+
+    {seller.archetype==="absent"
+      ? <div className="absent-state"><Clock3 size={20}/><p>No content arrived. Your principal and the seller&apos;s reserved bond are still locked.</p></div>
+      : <div className="payload-fields">
+          {entries.map(([key, value]) => {
+            const fault = faultOf(value);
+            return <div key={key} className={`payload-row ${fault ? "faulted" : ""}`}>
+              <span>{key}</span>
+              <b>{preview(value)}</b>
+              {fault && <em><TriangleAlert size={11}/> {fault}</em>}
+            </div>;
+          })}
+          {entries.length===0 && <div className="payload-row faulted"><span>body</span><b>empty</b><em><TriangleAlert size={11}/> nothing usable</em></div>}
+          <details className="payload-raw"><summary>Raw response</summary><pre>{JSON.stringify(payload ?? {},null,2)}</pre></details>
+        </div>}
+
+    {seller.archetype==="faulty" && <p className="payload-warning">
+      <TriangleAlert size={14}/> The request succeeded and you were charged for it. {faults > 0 ? `${faults} of ${entries.length} fields came back unusable.` : "The content is not what was requested."}
+    </p>}
+  </div>;
+}
+
 function AdoptSection() {
   const [tab, setTab] = useState<"sell" | "buy" | "console">("sell");
   const code = tab === "sell"

@@ -34,6 +34,45 @@ export function verifySessionToken(token: string, visitorId: string, ip: string)
   } catch { return undefined; }
 }
 
+
+/**
+ * A quote that has been fetched but not yet paid for.
+ *
+ * Act II used to run quote -> validation -> approve -> createJob -> delivery in one
+ * uninterrupted stream, so the page spent the visitor's money without ever asking. Splitting
+ * it here lets the free steps (quote, validation) run automatically and stops at the one step
+ * a real buyer actually authorises: funding the escrow. Signed with the same HMAC as
+ * LiveSessionToken so the client cannot alter the price or seller between the two calls.
+ */
+export type PendingQuote = {
+  visitorId: string;
+  ip: string;
+  sellerKey: string;
+  requestHash: `0x${string}`;
+  price: string;
+  createdAt: number;
+};
+
+export function createPendingToken(value: Omit<PendingQuote, "createdAt">): string {
+  const payload = Buffer.from(JSON.stringify({ ...value, createdAt: Date.now() })).toString("base64url");
+  const signature = createHmac("sha256", signingKey()).update(payload).digest("base64url");
+  return `${payload}.${signature}`;
+}
+
+export function verifyPendingToken(token: string, visitorId: string, ip: string): PendingQuote | undefined {
+  const [payload, supplied] = token.split(".");
+  if (!payload || !supplied) return undefined;
+  const expected = createHmac("sha256", signingKey()).update(payload).digest();
+  const actual = Buffer.from(supplied, "base64url");
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return undefined;
+  try {
+    const value = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as PendingQuote;
+    // Short window: a quote the visitor never funded should expire rather than linger.
+    if (value.visitorId !== visitorId || value.ip !== ip || Date.now() - value.createdAt > 15 * 60_000) return undefined;
+    return value;
+  } catch { return undefined; }
+}
+
 type Tour = { visitorId: string; startedAt: number; sellers: Set<string> };
 const toursByIp = new Map<string, Tour>();
 const globalStarts: number[] = [];

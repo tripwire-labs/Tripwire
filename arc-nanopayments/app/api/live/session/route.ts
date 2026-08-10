@@ -6,13 +6,15 @@ import { arcTestnet } from "viem/chains";
 import { createJob, disputeJob, releaseJob, signJobId } from "@/lib/jobEscrow";
 import { ARC_TESTNET_RPC, ARC_USDC, envAddress, publicClient, readSellerBond, usdc } from "@/lib/live/chain";
 import { getSellerByKey } from "@/lib/live/config";
-import { claimTour, createSessionToken, verifySessionToken } from "@/lib/live/session-store";
+import { claimTour, createPendingToken, createSessionToken, verifyPendingToken, verifySessionToken } from "@/lib/live/session-store";
 import { clientIpFrom } from "@/lib/rateLimit";
 
 const JOB_DURATION_SECONDS = BigInt(3_600);
 
 type StartBody = { action: "start"; sellerKey: string; visitorId: string };
+type FundBody = { action: "fund"; quoteToken: string; visitorId: string };
 type VerdictBody = { action: "verdict"; sessionId: string; visitorId: string; verdict: "accept" | "dispute" };
+type Body = StartBody | FundBody | VerdictBody;
 
 function replay(reason: string) {
   return NextResponse.json({ mode: "replay", reason, replayJobId: "1" }, { status: 200 });
@@ -40,7 +42,7 @@ function ndjson(run: (send: (value: unknown) => void) => Promise<void>) {
 }
 
 export async function POST(request: NextRequest) {
-  const body = await request.json().catch(() => null) as StartBody | VerdictBody | null;
+  const body = await request.json().catch(() => null) as Body | null;
   if (!body || !body.action || !("visitorId" in body) || !body.visitorId) {
     return NextResponse.json({ error: "Invalid session request." }, { status: 400 });
   }
@@ -61,6 +63,61 @@ export async function POST(request: NextRequest) {
         const txHash = await disputeJob(wallet, envAddress("JOB_ESCROW_ADDRESS"), BigInt(session.jobId), evidenceHash);
         send({ type: "disputed", txHash, evidenceHash, jobId: session.jobId, message: "Status is now DISPUTED. The escrow and reserved bond are still locked." });
       }
+    });
+  }
+
+
+  // ---- Act II part 2: the spend. Only reached because the visitor asked for it. ----
+  if (body.action === "fund") {
+    const pending = verifyPendingToken(body.quoteToken, body.visitorId, ip);
+    if (!pending) return NextResponse.json({ error: "That quote has expired. Choose the seller again." }, { status: 404 });
+    const fundSeller = getSellerByKey(pending.sellerKey);
+    if (!fundSeller) return NextResponse.json({ error: "Unknown seller." }, { status: 400 });
+
+    return ndjson(async (send) => {
+      const trustedEscrow = envAddress("JOB_ESCROW_ADDRESS");
+      const wallet = buyerWallet();
+      const buyer = wallet.account!;
+      const url = `${request.nextUrl.origin}${fundSeller.endpoint}`;
+      const amount = parseUnits(pending.price.slice(1), 6);
+
+      const beforeBuyer = await publicClient.readContract({ address: ARC_USDC, abi: erc20Abi, functionName: "balanceOf", args: [buyer.address] });
+      const beforeBond = await readSellerBond(fundSeller.agentId);
+
+      send({ type: "approval", message: `Approving exactly ${usdc(amount)} USDC for the trusted JobEscrow.` });
+      const approveTxHash = await wallet.writeContract({ address: ARC_USDC, abi: erc20Abi, functionName: "approve", args: [trustedEscrow, amount] });
+      await publicClient.waitForTransactionReceipt({ hash: approveTxHash });
+
+      const completionDeadline = BigInt(Math.floor(Date.now() / 1000)) + JOB_DURATION_SECONDS;
+      const { jobId, txHash: createTxHash } = await createJob(wallet, trustedEscrow, {
+        sellerAgentId: fundSeller.agentId, amount, completionDeadline, validationRequestHash: pending.requestHash,
+      });
+      const [afterBuyer, afterBond] = await Promise.all([
+        publicClient.readContract({ address: ARC_USDC, abi: erc20Abi, functionName: "balanceOf", args: [buyer.address] }),
+        readSellerBond(fundSeller.agentId),
+      ]);
+      send({
+        type: "funded", jobId: jobId.toString(), approveTxHash, createTxHash, amount: usdc(amount),
+        buyerBefore: usdc(beforeBuyer), buyerAfter: usdc(afterBuyer),
+        bondReservedBefore: usdc(beforeBond.reserved), bondReservedAfter: usdc(afterBond.reserved),
+        responseDeadline: Number(completionDeadline + BigInt(172_800)),
+        message: "USDC entered escrow—not the seller wallet—and 20% was reserved from the seller's bond.",
+      });
+
+      const signature = await signJobId(wallet, trustedEscrow, jobId);
+      const deliveryRes = await fetch(url, { ...buildRequestInit(fundSeller), headers: { ...(buildRequestInit(fundSeller).headers ?? {}), "x-job-id": jobId.toString(), "x-job-signature": signature } });
+      const deliveryText = await deliveryRes.text();
+      const evidenceHash = keccak256(toBytes(deliveryRes.ok ? deliveryText : "no-content-delivered"));
+      const sessionId = createSessionToken({ visitorId: body.visitorId, ip, jobId: jobId.toString(), sellerKey: fundSeller.key, evidenceHash });
+      send({
+        type: "delivery", sessionId, archetype: fundSeller.archetype, ok: deliveryRes.ok, status: deliveryRes.status,
+        payload: deliveryRes.ok ? JSON.parse(deliveryText) : null,
+        message: fundSeller.archetype === "honest"
+          ? "The payload arrived correctly. The seller still has not been paid."
+          : fundSeller.archetype === "faulty"
+            ? "HTTP succeeded, but the returned shape is visibly wrong. The seller still has not been paid."
+            : "Nothing arrived. Your money remains in escrow, and you must dispute before the response deadline.",
+      });
     });
   }
 
@@ -91,50 +148,43 @@ export async function POST(request: NextRequest) {
     return replay("Arc testnet preflight is unavailable, so this run uses verified history.");
   }
 
+  // ---- Act II part 1: the free steps. Quote and validation only; no money moves. ----
   return ndjson(async (send) => {
     const trustedEscrow = envAddress("JOB_ESCROW_ADDRESS");
-    const wallet = buyerWallet();
-    const buyer = wallet.account!;
     const origin = request.nextUrl.origin;
     const url = `${origin}${seller.endpoint}`;
-    const requestInit = seller.method === "POST"
-      ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "Tripwire live verification request" }) }
-      : { method: "GET" };
 
     send({ type: "quote-request", seller: seller.name, endpoint: seller.endpoint, message: "Asking the seller for terms. Nothing has been paid." });
-    const quoteRes = await fetch(url, requestInit);
+    const quoteRes = await fetch(url, buildRequestInit(seller));
     if (quoteRes.status === 429) {
       send({ type: "replay", mode: "replay", replayJobId: "1", reason: "The quote registry is rate-limited, so this run switches to verified history." });
       return;
     }
     if (quoteRes.status !== 402) throw new Error(`Expected a 402 quote; seller returned ${quoteRes.status}.`);
     const quote = await quoteRes.json() as { price: string; sellerAgentId: string; requestHash: `0x${string}`; jobEscrowAddress: `0x${string}`; validationTxHash: `0x${string}` };
-    send({ type: "quote", ...quote, endpoint: seller.endpoint, message: "402 Job Required. The seller has quoted terms; no payment moved." });
-    send({ type: "validation", txHash: quote.validationTxHash, requestHash: quote.requestHash, message: "The seller registered this exact request for ERC-8004 validation." });
 
+    // The buyer verifies the seller's terms against its own trusted values BEFORE any
+    // approval exists to abuse. Never drop these checks.
     if (quote.jobEscrowAddress.toLowerCase() !== trustedEscrow.toLowerCase()) throw new Error("The seller quoted an untrusted escrow address; approval was refused.");
     if (quote.price !== seller.price || quote.sellerAgentId !== seller.agentId.toString()) throw new Error("The seller quote does not match the buyer's trusted price or identity.");
 
-    const amount = parseUnits(quote.price.slice(1), 6);
-    const beforeBuyer = await publicClient.readContract({ address: ARC_USDC, abi: erc20Abi, functionName: "balanceOf", args: [buyer.address] });
-    const beforeBond = await readSellerBond(seller.agentId);
-    send({ type: "approval", message: `Approving exactly ${usdc(amount)} USDC for the trusted JobEscrow.` });
-    const approveTxHash = await wallet.writeContract({ address: ARC_USDC, abi: erc20Abi, functionName: "approve", args: [trustedEscrow, amount] });
-    await publicClient.waitForTransactionReceipt({ hash: approveTxHash });
+    send({ type: "quote", ...quote, endpoint: seller.endpoint, message: "402 Job Required. The seller has quoted terms; no payment moved." });
+    send({ type: "validation", txHash: quote.validationTxHash, requestHash: quote.requestHash, message: "The seller registered this exact request for ERC-8004 validation." });
 
-    const completionDeadline = BigInt(Math.floor(Date.now() / 1000)) + JOB_DURATION_SECONDS;
-    const { jobId, txHash: createTxHash } = await createJob(wallet, trustedEscrow, { sellerAgentId: seller.agentId, amount, completionDeadline, validationRequestHash: quote.requestHash });
-    const [afterBuyer, afterBond] = await Promise.all([
-      publicClient.readContract({ address: ARC_USDC, abi: erc20Abi, functionName: "balanceOf", args: [buyer.address] }),
-      readSellerBond(seller.agentId),
-    ]);
-    send({ type: "funded", jobId: jobId.toString(), approveTxHash, createTxHash, amount: usdc(amount), buyerBefore: usdc(beforeBuyer), buyerAfter: usdc(afterBuyer), bondReservedBefore: usdc(beforeBond.reserved), bondReservedAfter: usdc(afterBond.reserved), responseDeadline: Number(completionDeadline + BigInt(172_800)), message: "USDC entered escrow—not the seller wallet—and 20% was reserved from the seller's bond." });
-
-    const signature = await signJobId(wallet, trustedEscrow, jobId);
-    const deliveryRes = await fetch(url, { ...requestInit, headers: { ...(requestInit.headers ?? {}), "x-job-id": jobId.toString(), "x-job-signature": signature } });
-    const deliveryText = await deliveryRes.text();
-    const evidenceHash = keccak256(toBytes(deliveryRes.ok ? deliveryText : "no-content-delivered"));
-    const sessionId = createSessionToken({ visitorId: body.visitorId, ip, jobId: jobId.toString(), sellerKey: seller.key, evidenceHash });
-    send({ type: "delivery", sessionId, archetype: seller.archetype, ok: deliveryRes.ok, status: deliveryRes.status, payload: deliveryRes.ok ? JSON.parse(deliveryText) : null, message: seller.archetype === "honest" ? "The payload arrived correctly. The seller still has not been paid." : seller.archetype === "faulty" ? "HTTP succeeded, but the returned shape is visibly wrong. The seller still has not been paid." : "Nothing arrived. Your money remains in escrow, and you must dispute before the response deadline." });
+    // Stop here and hand control back. Funding is the visitor's decision, not ours.
+    const quoteToken = createPendingToken({ visitorId: body.visitorId, ip, sellerKey: seller.key, requestHash: quote.requestHash, price: quote.price });
+    send({
+      type: "awaiting-funding",
+      quoteToken,
+      price: quote.price,
+      message: `The seller wants ${quote.price} USDC. Nothing has left your wallet — you decide whether to fund the escrow.`,
+    });
   });
+}
+
+/** Shared request shape so the quote and the delivery call the endpoint identically. */
+function buildRequestInit(seller: { method: string }) {
+  return seller.method === "POST"
+    ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "Tripwire live verification request" }) }
+    : { method: "GET" };
 }
